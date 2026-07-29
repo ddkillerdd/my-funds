@@ -81,7 +81,7 @@ FundAdvisor 是基于开源项目 **Fund-Portfolio-Tracker** 改造的个人基�
 ### 2.3 前置依赖
 
 - MySQL 8.0+ 运行中（已有 Docker 容器）
-- Python 3.12+（当前 3.9，需通过 deadsnakes PPA 或 pyenv 升级）
+- Python 3.12+（已通过 pyenv 安装 3.12.9，`backend/.venv` 虚拟环境）
 - Node.js 18+（当前 v24.16.0 已满足）
 - NewAPI 中转站运行中（端口 8443）
 - 网络可访问 `fund.eastmoney.com`（东方财富 API）
@@ -96,21 +96,15 @@ FundAdvisor 是基于开源项目 **Fund-Portfolio-Tracker** 改造的个人基�
 前端/后端 -> NewAPI(:8443/v1) -> NVIDIA NIM 免费渠道
 ```
 
-### 3.2 可用模型
+### 3.2 主模型
 
-| 模型 ID（NewAPI 字段） | 简称 | 特点 | 推荐用途 |
-|------------------------|------|------|----------|
-| `minimaxai/minimax-m3` | minimax-m3 | 综合能力强 | 综合分析 |
-| `mistralai/mistral-large-3-675b` | mistral-large | 大参数 | 深度分析 |
-| `meta/llama-3.2-11b-vision` | llama-vision | 多模态 | 图表解读（未来） |
-| `nvidia/nemotron-3-nano-omni-30b` | nemotron-30b | 轻量高效 | 快速判断 |
-| `stepfun-ai/step-3.5-flash` | step-3.5 | 快速响应 | 轻量检查 |
-| `stepfun-ai/step-3.7-flash` | step-3.7 | 均衡 | 日常建议 |
-| `nvidia/nvidia-nemotron-nano-9b-v2` | nemotron-9b | 最轻量 | 频繁调用 |
-| `z-ai/glm-5.2` | glm-5.2 | 中文优化 | 中文报告 |
-| `deepseek-ai/deepseek-v4-flash` | ds-v4-flash | 性价比高 | 综合场景 |
+| 模型 ID（NewAPI 字段） | 简称 | 用途 |
+|------------------------|------|------|
+| `stepfun-ai/step-3.7-flash` | step-3.7 | 日常 AI 分析（温度 0.3，超时 120s） |
+| `minimaxai/minimax-m3` | minimax-m3 | advisor_service 中的 fallback 模型 |
+| `nvidia/nvidia-nemotron-nano-9b-v2` | nemotron-9b | 二级 fallback |
 
-> API Key 复用 BiliBot 的 NewAPI Token，调用零成本。
+> API Key 复用 BiliBot 的 NewAPI Token。
 
 ---
 
@@ -828,7 +822,7 @@ export default defineConfig({
 
 **交互**：
 - 点击 TOP 持仓项 -> 跳转 `/fund/:fundCode`
-- 下拉刷新（移动端）
+- ~~下拉刷新（移动端）~~ **未实现**
 
 ### 10.2 HoldingsView (持仓列表)
 
@@ -1262,7 +1256,7 @@ EXPOSE 8200
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8200"]
 ```
 
-**注意**：当前 Dockerfile EXPOSE 8000，需改为 8200
+**注意**：当前 Dockerfile EXPOSE 和 CMD 端口均已改为 8200
 
 ### 14.2 前端 Dockerfile
 
@@ -1330,7 +1324,7 @@ networks:
     driver: bridge
 ```
 
-**注意**：当前 docker-compose.yml.example 端口为 8000/3000，需改为 8200/8201
+**注意**：`docker-compose.yml.example` 仍为旧端口（8000/3000），使用前需手动改为 8200/8201
 
 ---
 
@@ -1370,17 +1364,24 @@ SMTP_TO=<收件邮箱>
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| DB_HOST | str | "192.168.224.171" | **需改为 127.0.0.1** |
-| DB_PORT | int | 3326 | **需改为 3306** |
+| DB_HOST | str | "***REMOVED***" | MySQL 容器地址 |
+| DB_PORT | int | 3306 | |
 | DB_USER | str | "root" | |
-| DB_PASSWORD | str | "unionman#2025" | **需改为实际密码** |
-| DB_NAME | str | "fund_tracker" | **需改为 fund_advisor** |
+| DB_PASSWORD | str | "***REMOVED***" | 宝塔 MySQL 密码 |
+| DB_NAME | str | "fund_advisor" | |
 | APP_ENV | str | "development" | |
-| APP_PORT | int | 8000 | **需改为 8200** |
+| APP_PORT | int | 8200 | |
 | NAV_FETCH_CONCURRENCY | int | 5 | |
 | NAV_FETCH_INTERVAL | float | 0.5 | |
+| NEWAPI_BASE_URL | str | "" | 由 .env 覆盖 |
+| NEWAPI_API_KEY | SecretStr | "" | 由 .env 覆盖 |
+| SMTP_HOST | str | "" | 由 .env 覆盖 |
+| SMTP_PORT | int | 465 | |
+| SMTP_USER | str | "" | 由 .env 覆盖 |
+| SMTP_PASSWORD | SecretStr | "" | 由 .env 覆盖 |
+| SMTP_TO | str | "" | 收件邮箱，由 .env 覆盖 |
 
-> ⚠️ config.py 中的默认值是原开发环境的，部署到 qiqi 服务器时必须通过 .env 覆盖
+> ⚠️ 敏感配置通过 .env 文件覆盖，config.py 默认值仅作为 fallback
 
 ### 15.3 alembic.ini 配置
 
@@ -1577,9 +1578,15 @@ fund-advisor/
 │   │   ├── holding_daily_pnl.py
 │   │   ├── calendar.py
 │   │   └── import_result.py
-│   ├── scheduler/
+│   ├── models/                   # SQLAlchemy ORM 模型
 │   │   ├── __init__.py
-│   │   └── jobs.py               # APScheduler 定时任务
+│   │   ├── fund.py
+│   │   ├── holding.py
+│   │   ├── holding_change.py
+│   │   ├── holding_daily_pnl.py
+│   │   ├── nav_history.py
+│   │   ├── portfolio_snapshot.py
+│   │   └── import_record.py
 │   ├── config.py                 # Pydantic Settings
 │   ├── database.py               # SQLAlchemy 引擎
 │   ├── __init__.py
@@ -1729,4 +1736,4 @@ vite: ^6.x
 
 ---
 
-*文档版本: v3.0 | 最后更新: 2026-07-29 | 变更: Phase 0-3 全部完成，附录F打勾，新增 SMTP/OpenClaw cron/GitHub 检查项*
+*文档版本: v3.1 | 最后更新: 2026-07-29 | 变更: 文档核验修复——config表格/模型描述/Docker说明/目录树重复/P1标记*
