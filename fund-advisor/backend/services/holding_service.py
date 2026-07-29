@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 from typing import Optional
+import logging
 
 from sqlalchemy import select, func, distinct, case
 from sqlalchemy.orm import Session
@@ -17,6 +18,8 @@ from backend.schemas.holding import (
     SimpleImportRecord,
     SimpleImportResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 ZERO = Decimal("0")
@@ -241,6 +244,7 @@ class HoldingService:
                 result.success += 1
                 result.details.append(holding)
             except Exception as e:
+                logger.error(f"Failed to import {rec.fund_code}: {e}")
                 result.errors.append({
                     "fund_code": rec.fund_code,
                     "message": str(e),
@@ -292,21 +296,22 @@ class HoldingService:
                 FundHolding.fund_code == rec.fund_code,
                 FundHolding.platform == rec.platform,
                 FundHolding.fund_account == fund_account,
-                FundHolding.status == 1,
             )
         ).scalar_one_or_none()
 
         if existing:
-            # Update shares and market_value on existing holding
+            # Update shares and market_value on existing holding (reactivate if was soft-deleted)
             existing.shares = shares
             existing.share_date = rec.share_date
             existing.market_value = rec.market_value
+            existing.status = 1
             if nav:
                 existing.nav_on_import = nav
                 existing.nav_date = nav_date
                 existing.cost_nav = existing.cost_nav or nav
             existing.last_import_id = None
             self.db.flush()
+            self.db.commit()
             self.db.refresh(existing)
             return self._to_response(existing, fund)
 
@@ -327,5 +332,6 @@ class HoldingService:
         )
         self.db.add(holding)
         self.db.flush()
+        self.db.commit()
         self.db.refresh(holding)
         return self._to_response(holding, fund)
