@@ -319,8 +319,25 @@ cd /root/.openclaw/workspace/fund-advisor/frontend && npx vite --host 0.0.0.0 --
 - 前端:8201 正常重启 ✅
 - OpenClaw cron 注册成功 ✅（ID: b230ae69-9887-476c-95f6-cc8051412037）
 
-### 与 PROJECT.md 的差异
+---
 
-- PROJECT.md 未提及 scheduler 端点和 cron 配置 — 属于 Phase 3 新增设计
-- `AdvisorJob` 的 run() 返回比 PROJECT.md 描述的更细（含 fallback 检测和 summary）
-- OpenClaw cron 模式替代了传统的 systemd timer（更灵活、可远程管理）
+## 2026-07-29 22:00 — 修复 AI 分析 NIM reasoning 兼容性
+
+### 背景
+NVIDIA NIM 渠道的 stepfun-ai/step-3.7-flash 和 nvidia-nvidia-nemotron-nano-9b-v2 等推理模型将回答放在 `reasoning` 而非 `content` 字段，导致 advisor_service.py 取到空值后永远走 fallback。
+
+### 修改
+- `backend/services/advisor_service.py` `_call_llm()` 方法：
+  - 从 `msg["content"]` 改为 `msg.get("content") or msg.get("reasoning") or ""`
+  - 先取 content，若空则取 reasoning，兜底空字符串
+  - 仅改了 1 行，不影响原有逻辑
+
+### 其他修正
+- NewAPI token 因 token 编码器激活导致旧 token 全部失效
+  - 通过 NewAPI 管理 API 创建新 token `fundadvisor-ai`
+  - `.env` NEWAPI_API_KEY 已更新
+- 验证通过：无持仓数据时 step-3.7 正常返回分析结果（is_fallback=False）
+
+### 影响范围
+- 仅修改 `advisor_service.py` 1 行 + 更新 `.env` key
+- 数据库、前端、其他 API 不变

@@ -229,7 +229,9 @@ class AdvisorService:
                 resp = client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"]
+                msg = data["choices"][0]["message"]
+                # NVIDIA NIM 推理模型: content 可能为 null, 实际回答在 reasoning 字段
+                content = msg.get("content") or msg.get("reasoning") or ""
                 return content
         except httpx.TimeoutException:
             logger.error(f"NewAPI timeout for model {model}")

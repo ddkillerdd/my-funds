@@ -45,3 +45,15 @@
 - 邮件推送链路验证通过（已产出测试邮件）
 - NewAPI KEY 写入 git credential store，后续 push 免认证
 - PROJECT.md v3.0→v3.2
+
+## [1.0.2] - 2026-07-29
+
+### Fixed
+- NVIDIA NIM 推理模型 content=null 取不到值，AI 分析永远走 fallback
+  - 修复：_call_llm() 从 content 降级到 reasoning 字段
+  - 原因：step-3.7-flash/nemotron 等推理模型的回答在 reasoning 中
+
+### Changed
+- NewAPI token 因编码器升级失效，重新创建 fundadvisor-ai token
+- .env NEWAPI_API_KEY 更新为新的 token
+- DEVLOG 新增 2026-07-29 22:00 日志
