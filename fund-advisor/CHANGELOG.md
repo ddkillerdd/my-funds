@@ -1,0 +1,47 @@
+# Changelog
+
+> 版本变更摘要。详细开发日志见 `DEVLOG.md`。
+
+## [1.0.0] - 2026-07-29
+
+### Added
+- Phase 0: 环境适配部署（Python 3.12 + MySQL fund_advisor + CORS 适配）
+- Phase 1: Bug 修复（货币基金净值、收益一致性、总资产偏差）
+- Phase 1.2: 手动持仓录入（后端 POST/DELETE + 前端表单弹窗）
+- Phase 2: AI 决策引擎（AdvisorService + NewAPI 集成 + 四大分析维度）
+- Phase 3: 自动化推送（MailService + AdvisorJob + OpenClaw cron 工作日 09:00）
+
+### Fixed
+- 货币基金万份收益被当作单位净值的 Bug
+- 日历日收益与仪表盘日涨跌不一致的 Bug
+- 总资产被识别为字符串导致统计偏差的 Bug
+
+### Changed
+- config.py 默认值适配部署环境（Docker MySQL 容器）
+- 前端端口 8200→8201，避免与后端冲突
+- Dockerfile/docker-compose 端口同步修改
+- 新增文件被 git 跟踪并推送至 GitHub
+
+## [1.0.1] - 2026-07-29
+
+### Added
+- 持仓列表删除按钮（el-popconfirm 确认弹窗）
+- PROJECT.md 附录 F 部署清单全部打勾（13+3 项）
+- PROJECT.md §22 演进路线图
+- PROJECT.md §23 项目目录说明
+- docs/ 目录，规范 RFC 先行流程
+- CHANGELOG.md 版本变更摘要
+
+### Fixed
+- .env 中 NEWAPI 配置被 SMTP 编辑覆盖丢失
+- config.py 中 SMTP_TO 字段缺失
+- config.py 缺少 env_file 配置导致 .env 不被自动加载
+- docker-compose.yml.example 仍为旧端口(8000/3000)
+- PROJECT.md 多处与实际代码不一致（config 默认值表、模型列表、目录树）
+- PROJECT.md 中 scheduler/ 和 schemas/ 目录出现重复
+
+### Changed
+- SMTP 配置完成（QQ邮箱 465/SSL）
+- 邮件推送链路验证通过（已产出测试邮件）
+- NewAPI KEY 写入 git credential store，后续 push 免认证
+- PROJECT.md v3.0→v3.2
