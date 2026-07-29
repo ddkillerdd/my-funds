@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from backend.database import get_db
-from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse
+from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse, SimpleImportRequest, SimpleImportResult
 
 router = APIRouter()
 
@@ -74,3 +74,17 @@ def delete_holding(
         return HoldingService(db).delete_holding(holding_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/simple-import", response_model=SimpleImportResult)
+def simple_import(
+    body: SimpleImportRequest,
+    db: Session = Depends(get_db),
+):
+    """Quick import: fund_code + market_value only.
+
+    Auto-resolves fund name, looks up latest NAV,
+    and calculates shares automatically.
+    """
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).simple_import(body.records)

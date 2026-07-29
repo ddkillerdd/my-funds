@@ -2,7 +2,85 @@
   <div class="import-view">
     <h2 class="page-title">数据导入</h2>
 
-    <!-- Upload Area -->
+    <!-- Quick Import (RFC-002) -->
+    <el-card shadow="hover" class="quick-import-card">
+      <template #header>
+        <span>📝 快捷导入 — 只需基金代码 + 持有金额</span>
+      </template>
+
+      <div class="quick-import-form">
+        <el-input
+          v-model="quickFundCode"
+          placeholder="基金代码（如 018044）"
+          class="quick-code-input"
+          clearable
+          @keyup.enter="addQuickRecord"
+        />
+        <el-input
+          v-model="quickAmount"
+          placeholder="持有金额（元）"
+          class="quick-amount-input"
+          clearable
+          @keyup.enter="addQuickRecord"
+        >
+          <template #prefix>¥</template>
+        </el-input>
+        <el-button type="primary" :icon="Plus" @click="addQuickRecord">添加</el-button>
+      </div>
+
+      <!-- Quick Import Preview -->
+      <div v-if="quickRecords.length > 0" class="quick-preview">
+        <el-table :data="quickRecords" stripe max-height="300">
+          <el-table-column prop="fund_code" label="基金代码" width="110" />
+          <el-table-column prop="fund_name" label="基金名称" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row._resolved_name" class="text-resolved">{{ row._resolved_name }}</span>
+              <span v-else class="text-pending">待查询</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="持有金额" width="120" align="right">
+            <template #default="{ row }">
+              ¥{{ Number(row.market_value).toFixed(2) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="份额" width="150" align="right">
+            <template #default="{ row }">
+              <span v-if="row._shares_hint" class="text-resolved">{{ formatShares(row._shares_hint) }}</span>
+              <el-tag v-else size="small" type="warning">待净值</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="平台" width="120">
+            <template #default="{ row }">
+              <el-select v-model="row.platform" size="small" style="width: 100px">
+                <el-option label="支付宝" value="支付宝" />
+                <el-option label="天天基金" value="天天基金" />
+                <el-option label="银行" value="银行" />
+                <el-option label="其他" value="其他" />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="60" align="center">
+            <template #default="{ $index }">
+              <el-button type="danger" :icon="Delete" size="small" link @click="quickRecords.splice($index, 1)" />
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="quick-import-actions">
+          <el-button
+            type="primary"
+            :icon="Upload"
+            :loading="quickImporting"
+            @click="handleQuickImport"
+          >
+            批量导入 ({{ quickRecords.length }} 条)
+          </el-button>
+          <el-button @click="quickRecords = []">清空列表</el-button>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- Upload Area (existing) -->
     <el-card shadow="hover" class="upload-card">
       <template #header>
         <span>上传持仓文件</span>
@@ -151,9 +229,9 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { UploadFilled, Upload } from '@element-plus/icons-vue'
+import { UploadFilled, Upload, Delete, Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { uploadExcel, getImportHistory, getImportChanges } from '../api/index.js'
+import { uploadExcel, getImportHistory, getImportChanges, simpleImport } from '../api/index.js'
 
 const uploadRef = ref(null)
 const selectedFile = ref(null)
@@ -161,6 +239,12 @@ const uploading = ref(false)
 const importResult = ref(null)
 const importHistory = ref([])
 const historyLoading = ref(false)
+
+// Quick Import (RFC-002)
+const quickFundCode = ref('')
+const quickAmount = ref('')
+const quickRecords = ref([])
+const quickImporting = ref(false)
 
 const changesDialogVisible = ref(false)
 const changesData = ref([])
@@ -220,6 +304,68 @@ function handleFileChange(file) {
 
 function handleExceed() {
   ElMessage.warning('只能上传一个文件，请先移除已选文件')
+}
+
+// ---- Quick Import (RFC-002) ----
+
+function addQuickRecord() {
+  const code = quickFundCode.value.trim()
+  const amount = parseFloat(quickAmount.value)
+  if (!code) {
+    ElMessage.warning('请输入基金代码')
+    return
+  }
+  if (!amount || amount <= 0) {
+    ElMessage.warning('请输入有效的持有金额')
+    return
+  }
+  // Check duplicate
+  if (quickRecords.value.some(r => r.fund_code === code)) {
+    ElMessage.warning('该基金代码已添加')
+    return
+  }
+  quickRecords.value.push({
+    fund_code: code,
+    market_value: amount,
+    platform: '支付宝',
+    _resolved_name: null,
+    _shares_hint: null,
+  })
+  quickFundCode.value = ''
+  quickAmount.value = ''
+}
+
+async function handleQuickImport() {
+  if (quickRecords.value.length === 0) return
+  quickImporting.value = true
+  try {
+    const records = quickRecords.value.map(r => ({
+      fund_code: r.fund_code,
+      market_value: r.market_value,
+      platform: r.platform,
+      share_date: new Date().toISOString().slice(0, 10),
+    }))
+    const res = await simpleImport(records)
+    const msg = `成功导入 ${res.success} 条` + (res.errors.length ? `，${res.errors.length} 条失败` : '')
+    if (res.errors.length > 0) {
+      ElMessage.warning(msg)
+    } else {
+      ElMessage.success(msg)
+    }
+    quickRecords.value = []
+  } catch {
+    ElMessage.error('快捷导入失败')
+  } finally {
+    quickImporting.value = false
+  }
+}
+
+function formatShares(val) {
+  if (val == null) return '--'
+  return Number(val).toLocaleString('zh-CN', {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  })
 }
 
 async function handleUpload() {
@@ -300,6 +446,43 @@ onMounted(() => {
   font-size: 22px;
   font-weight: 600;
   color: #303133;
+}
+
+.quick-import-card {
+  margin-bottom: 20px;
+}
+
+.quick-import-form {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.quick-code-input {
+  width: 200px;
+}
+
+.quick-amount-input {
+  width: 180px;
+}
+
+.quick-preview {
+  margin-top: 16px;
+}
+
+.quick-import-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+}
+
+.text-resolved {
+  color: #67c23a;
+}
+
+.text-pending {
+  color: #909399;
+  font-style: italic;
 }
 
 .upload-card {

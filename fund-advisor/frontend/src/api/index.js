@@ -150,4 +150,10 @@ export function getCalendarDayDetail(date) {
   return api.get(`/analysis/calendar/${date}/detail`)
 }
 
+// ---- Simple Import (RFC-002) ----
+
+export function simpleImport(records) {
+  return api.post('/holdings/simple-import', { records })
+}
+
 export default api

@@ -8,11 +8,14 @@ from sqlalchemy.orm import Session
 
 from backend.models.fund import Fund
 from backend.models.holding import FundHolding
+from backend.models.nav_history import FundNavHistory
 from backend.schemas.holding import (
     HoldingResponse,
     HoldingsByPlatformResponse,
     HoldingCreate,
     HoldingDeleteResponse,
+    SimpleImportRecord,
+    SimpleImportResult,
 )
 
 
@@ -219,3 +222,110 @@ class HoldingService:
             "platform": FundHolding.platform,
         }
         return mapping.get(sort_by, FundHolding.market_value)
+
+    # ---------- Simple Import (RFC-002) ----------
+
+    def simple_import(self, records: list[SimpleImportRecord]) -> SimpleImportResult:
+        """Import holdings with just fund_code + market_value.
+
+        Auto-resolves fund_name from funds table.
+        Auto-calculates shares from market_value / latest_nav.
+        Creates fund entry if not exists (NAV backfilled later).
+        """
+        result = SimpleImportResult()
+        result.total = len(records)
+
+        for rec in records:
+            try:
+                holding = self._simple_import_one(rec)
+                result.success += 1
+                result.details.append(holding)
+            except Exception as e:
+                result.errors.append({
+                    "fund_code": rec.fund_code,
+                    "message": str(e),
+                })
+
+        return result
+
+    def _simple_import_one(self, rec: SimpleImportRecord) -> HoldingResponse:
+        """Import a single holding from fund_code + market_value."""
+        # Resolve fund
+        fund = self.db.execute(
+            select(Fund).where(Fund.fund_code == rec.fund_code)
+        ).scalar_one_or_none()
+
+        if fund:
+            fund_name = fund.fund_name
+        else:
+            # Create stub fund entry (name will be backfilled by NAV refresh)
+            fund = Fund(fund_code=rec.fund_code, fund_name=f"基金{rec.fund_code}")
+            self.db.add(fund)
+            self.db.flush()
+            fund_name = fund.fund_name
+
+        # Try to get latest NAV
+        nav = fund.latest_nav
+        nav_date = fund.latest_nav_date
+
+        # Try nav_history if fund table doesn't have it
+        if nav is None:
+            latest_nav_row = self.db.execute(
+                select(FundNavHistory)
+                .where(FundNavHistory.fund_code == rec.fund_code)
+                .order_by(FundNavHistory.nav_date.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if latest_nav_row:
+                nav = latest_nav_row.unit_nav
+                nav_date = latest_nav_row.nav_date
+
+        # Calculate shares (or mark as pending)
+        if nav and nav > 0:
+            shares = rec.market_value / nav
+        else:
+            shares = ZERO  # No NAV yet; backfill later
+
+        fund_account = f"ALIPAY_{rec.fund_code}"
+        existing = self.db.execute(
+            select(FundHolding).where(
+                FundHolding.fund_code == rec.fund_code,
+                FundHolding.platform == rec.platform,
+                FundHolding.fund_account == fund_account,
+                FundHolding.status == 1,
+            )
+        ).scalar_one_or_none()
+
+        if existing:
+            # Update shares and market_value on existing holding
+            existing.shares = shares
+            existing.share_date = rec.share_date
+            existing.market_value = rec.market_value
+            if nav:
+                existing.nav_on_import = nav
+                existing.nav_date = nav_date
+                existing.cost_nav = existing.cost_nav or nav
+            existing.last_import_id = None
+            self.db.flush()
+            self.db.refresh(existing)
+            return self._to_response(existing, fund)
+
+        # Create new holding
+        holding = FundHolding(
+            fund_code=rec.fund_code,
+            fund_name=fund_name,
+            platform=rec.platform,
+            fund_account=fund_account,
+            trade_account=fund_account,
+            shares=shares,
+            share_date=rec.share_date,
+            market_value=rec.market_value,
+            nav_on_import=nav,
+            nav_date=nav_date,
+            cost_nav=nav,
+            status=1,
+        )
+        self.db.add(holding)
+        self.db.flush()
+        self.db.refresh(holding)
+        return self._to_response(holding, fund)

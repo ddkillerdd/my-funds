@@ -68,3 +68,13 @@
 - advisor_service.analyze() 支持传入模型列表，失败自动切换下一个
 - 新增 `_is_fallback_result()` 判断 LLM 返回是否为兜底
 - 保持原有 API 返回结构不变（前端无感）
+
+## [1.2.0] - 2026-07-30
+
+### Added
+- 快捷导入功能（RFC-002）：用户只需基金代码 + 持有金额
+- `POST /api/holdings/simple-import` 新 API 端点
+- 前端 ImportView 新增快捷导入卡片
+- docs/RFC-002-simplified-import.md 提案文档
+- 自动从 latest_nav / nav_history 反算份额
+- 无净值时份额标记为 0，等待定时任务补采

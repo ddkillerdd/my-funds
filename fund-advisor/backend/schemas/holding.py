@@ -71,3 +71,27 @@ class HoldingDeleteResponse(BaseModel):
     fund_code: str
     fund_name: str
     status: str = "deleted"
+
+
+# ---------- Simple Import (RFC-002) ----------
+
+
+class SimpleImportRecord(BaseModel):
+    """Single record for simple import — just fund_code + market_value."""
+    fund_code: str
+    market_value: Decimal
+    platform: str = "支付宝"
+    share_date: date = date.today()
+
+
+class SimpleImportRequest(BaseModel):
+    """Batch request for simple import."""
+    records: list[SimpleImportRecord]
+
+
+class SimpleImportResult(BaseModel):
+    """Result of a simple import batch."""
+    total: int = 0
+    success: int = 0
+    errors: list[dict] = []
+    details: list[HoldingResponse] = []

@@ -354,3 +354,34 @@ NVIDIA NIM 渠道的 stepfun-ai/step-3.7-flash 和 nvidia-nvidia-nemotron-nano-9
 1. 导入真实持仓数据验证完整分析链路
 2. Phase B/C（见 RFC-001）
 
+
+---
+
+## 2026-07-30 00:20 — RFC-002 快捷导入实现
+
+### 背景
+用户从支付宝只能看到持有金额，不知道份额。每次导入需要查净值手动算。
+
+### 方案
+- 新建 API `POST /api/holdings/simple-import`
+- 用户只填：基金代码 + 持有金额（+ 可选平台/日期）
+- 系统自动：查名 → 查净值 → 金额/净值 → 份额
+- 前端 ImportView 新增"快捷导入"卡片
+
+### 修改文件
+- `docs/RFC-002-simplified-import.md` — 提案文档
+- `backend/schemas/holding.py` — SimpleImportRecord/Request/Result
+- `backend/services/holding_service.py` — simple_import() / _simple_import_one()
+- `backend/api/holdings.py` — POST /api/holdings/simple-import 端点
+- `frontend/src/api/index.js` — simpleImport()
+- `frontend/src/views/ImportView.vue` — 快捷导入卡片
+
+### 验证
+- 018044（有净值）→ 自动算份额 0.7279 ✅
+- 000001（无净值）→ 份额为 0，标记待采集 ✅
+- 原有 Excel/ZIP 导入不受影响 ✅
+
+### 注意
+- 新建的基金如果没有净值记录，份额填 0，等定时任务补采
+- 同一基金+同一平台+同一账户 已存在时自动更新
+
