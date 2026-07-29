@@ -7,6 +7,7 @@ import ImportView from '../views/ImportView.vue'
 import AnalysisView from '../views/AnalysisView.vue'
 import CalendarView from '../views/CalendarView.vue'
 import SettingsView from '../views/SettingsView.vue'
+import AdvisorView from '../views/AdvisorView.vue'
 
 const routes = [
   {
@@ -14,6 +15,12 @@ const routes = [
     name: 'Dashboard',
     component: DashboardView,
     meta: { title: '仪表盘' },
+  },
+  {
+    path: '/advisor',
+    name: 'Advisor',
+    component: AdvisorView,
+    meta: { title: 'AI 顾问' },
   },
   {
     path: '/holdings',

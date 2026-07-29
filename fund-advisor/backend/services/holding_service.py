@@ -1,4 +1,4 @@
-"""Holding service - query and manage fund holdings."""
+"""Holding service - query, create, update, and manage fund holdings."""
 
 from decimal import Decimal
 from typing import Optional
@@ -8,12 +8,122 @@ from sqlalchemy.orm import Session
 
 from backend.models.fund import Fund
 from backend.models.holding import FundHolding
-from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse
+from backend.schemas.holding import (
+    HoldingResponse,
+    HoldingsByPlatformResponse,
+    HoldingCreate,
+    HoldingDeleteResponse,
+)
+
+
+ZERO = Decimal("0")
 
 
 class HoldingService:
     def __init__(self, db: Session):
         self.db = db
+
+    def _to_response(self, holding: FundHolding, fund: Optional[Fund] = None) -> HoldingResponse:
+        """Convert ORM holding (+ optional fund) to response schema."""
+        current_mv = None
+        if fund and fund.latest_nav and holding.shares:
+            current_mv = holding.shares * fund.latest_nav
+
+        daily_pnl = None
+        if current_mv and fund and fund.nav_change_pct:
+            daily_pnl = current_mv * fund.nav_change_pct / (Decimal("100") + fund.nav_change_pct)
+
+        total_pnl = None
+        if current_mv and holding.cost_nav and holding.shares:
+            cost_mv = holding.shares * holding.cost_nav
+            total_pnl = current_mv - cost_mv
+
+        return HoldingResponse(
+            id=holding.id,
+            fund_code=holding.fund_code,
+            fund_name=holding.fund_name,
+            share_type=holding.share_type,
+            management_company=holding.management_company,
+            platform=holding.platform,
+            fund_account=holding.fund_account,
+            trade_account=holding.trade_account,
+            shares=holding.shares,
+            share_date=holding.share_date,
+            nav_on_import=holding.nav_on_import,
+            nav_date=holding.nav_date,
+            cost_nav=holding.cost_nav,
+            market_value=holding.market_value,
+            currency=holding.currency,
+            dividend_mode=holding.dividend_mode,
+            status=holding.status,
+            latest_nav=fund.latest_nav if fund else None,
+            latest_nav_date=fund.latest_nav_date if fund else None,
+            nav_change_pct=fund.nav_change_pct if fund else None,
+            current_market_value=current_mv,
+            daily_pnl=daily_pnl,
+            total_pnl=total_pnl,
+            created_at=holding.created_at,
+            updated_at=holding.updated_at,
+        )
+
+    def create_holding(self, data: HoldingCreate) -> HoldingResponse:
+        """Create a new manual holding entry."""
+        # Ensure fund exists in funds table
+        fund = self.db.execute(
+            select(Fund).where(Fund.fund_code == data.fund_code)
+        ).scalar_one_or_none()
+
+        if not fund:
+            fund = Fund(
+                fund_code=data.fund_code,
+                fund_name=data.fund_name,
+                management_company=data.management_company,
+            )
+            self.db.add(fund)
+            self.db.flush()
+
+        fund_account = data.fund_account or f"MANUAL_{data.fund_code}"
+        trade_account = data.trade_account or fund_account
+
+        holding = FundHolding(
+            fund_code=data.fund_code,
+            fund_name=data.fund_name,
+            share_type=data.share_type or "前收费",
+            management_company=data.management_company,
+            platform=data.platform,
+            fund_account=fund_account,
+            trade_account=trade_account,
+            shares=data.shares,
+            share_date=data.share_date,
+            nav_on_import=data.nav_on_import,
+            cost_nav=data.cost_nav,
+            market_value=data.market_value,
+            currency=data.currency,
+            dividend_mode=data.dividend_mode,
+        )
+        self.db.add(holding)
+        self.db.commit()
+        self.db.refresh(holding)
+
+        return self._to_response(holding, fund)
+
+    def delete_holding(self, holding_id: int) -> HoldingDeleteResponse:
+        """Soft delete (set status=0) a holding."""
+        holding = self.db.execute(
+            select(FundHolding).where(FundHolding.id == holding_id)
+        ).scalar_one_or_none()
+
+        if not holding:
+            raise ValueError(f"Holding {holding_id} not found")
+
+        holding.status = 0
+        self.db.commit()
+
+        return HoldingDeleteResponse(
+            id=holding.id,
+            fund_code=holding.fund_code,
+            fund_name=holding.fund_name,
+        )
 
     def get_holdings(
         self,
@@ -38,7 +148,6 @@ class HoldingService:
                 | (FundHolding.fund_name.like(search_term))
             )
 
-        # Sorting (MySQL doesn't support NULLS LAST, use COALESCE)
         sort_col = self._get_sort_column(sort_by)
         if sort_order == "asc":
             query = query.order_by(sort_col.asc())
@@ -49,52 +158,7 @@ class HoldingService:
             )
 
         rows = self.db.execute(query).all()
-
-        results = []
-        for holding, fund in rows:
-            current_mv = None
-            if fund and fund.latest_nav and holding.shares:
-                current_mv = holding.shares * fund.latest_nav
-
-            daily_pnl = None
-            if current_mv and fund and fund.nav_change_pct:
-                daily_pnl = current_mv * fund.nav_change_pct / Decimal("100")
-
-            # Total PnL = current MV - cost MV
-            total_pnl = None
-            if current_mv and holding.cost_nav and holding.shares:
-                cost_mv = holding.shares * holding.cost_nav
-                total_pnl = current_mv - cost_mv
-
-            results.append(HoldingResponse(
-                id=holding.id,
-                fund_code=holding.fund_code,
-                fund_name=holding.fund_name,
-                share_type=holding.share_type,
-                management_company=holding.management_company,
-                platform=holding.platform,
-                fund_account=holding.fund_account,
-                trade_account=holding.trade_account,
-                shares=holding.shares,
-                share_date=holding.share_date,
-                nav_on_import=holding.nav_on_import,
-                nav_date=holding.nav_date,
-                cost_nav=holding.cost_nav,
-                market_value=holding.market_value,
-                currency=holding.currency,
-                dividend_mode=holding.dividend_mode,
-                status=holding.status,
-                latest_nav=fund.latest_nav if fund else None,
-                latest_nav_date=fund.latest_nav_date if fund else None,
-                nav_change_pct=fund.nav_change_pct if fund else None,
-                current_market_value=current_mv,
-                daily_pnl=daily_pnl,
-                total_pnl=total_pnl,
-                created_at=holding.created_at,
-                updated_at=holding.updated_at,
-            ))
-
-        return results
+        return [self._to_response(holding, fund) for holding, fund in rows]
 
     def get_holdings_by_platform(self) -> list[HoldingsByPlatformResponse]:
         """Get holdings grouped by platform."""
@@ -104,7 +168,7 @@ class HoldingService:
         for platform in platforms:
             holdings = self.get_holdings(platform=platform)
             total_mv = sum(
-                h.current_market_value or h.market_value or Decimal("0")
+                h.current_market_value or h.market_value or ZERO
                 for h in holdings
             )
             results.append(HoldingsByPlatformResponse(
@@ -139,25 +203,11 @@ class HoldingService:
         self.db.commit()
         self.db.refresh(holding)
 
-        # Return updated holding with fund info
-        results = self.get_holdings(search=holding.fund_code)
-        for r in results:
-            if r.id == holding_id:
-                return r
+        fund = self.db.execute(
+            select(Fund).where(Fund.fund_code == holding.fund_code)
+        ).scalar_one_or_none()
 
-        # Fallback: return basic info
-        return HoldingResponse(
-            id=holding.id,
-            fund_code=holding.fund_code,
-            fund_name=holding.fund_name,
-            platform=holding.platform,
-            fund_account=holding.fund_account,
-            trade_account=holding.trade_account,
-            shares=holding.shares,
-            share_date=holding.share_date,
-            cost_nav=holding.cost_nav,
-            market_value=holding.market_value,
-        )
+        return self._to_response(holding, fund)
 
     def _get_sort_column(self, sort_by: str):
         """Map sort field name to SQLAlchemy column."""

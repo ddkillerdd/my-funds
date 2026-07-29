@@ -46,3 +46,28 @@ class HoldingsByPlatformResponse(BaseModel):
     count: int
     total_market_value: Optional[Decimal] = None
     holdings: list[HoldingResponse] = []
+
+
+class HoldingCreate(BaseModel):
+    """Schema for creating a new manual holding entry."""
+    fund_code: str
+    fund_name: str
+    share_type: Optional[str] = "前收费"
+    management_company: Optional[str] = None
+    platform: str
+    fund_account: Optional[str] = None
+    trade_account: Optional[str] = None
+    shares: Decimal
+    share_date: date
+    nav_on_import: Optional[Decimal] = None
+    cost_nav: Optional[Decimal] = None
+    market_value: Optional[Decimal] = None
+    currency: str = "人民币"
+    dividend_mode: Optional[str] = None
+
+
+class HoldingDeleteResponse(BaseModel):
+    id: int
+    fund_code: str
+    fund_name: str
+    status: str = "deleted"

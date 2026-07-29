@@ -189,12 +189,57 @@
         </el-descriptions-item>
       </el-descriptions>
     </el-card>
+
+    <el-card shadow="hover" class="settings-card">
+      <template #header>
+        <span>AI 顾问推送</span>
+      </template>
+      <div class="manual-section">
+        <el-button
+          type="danger"
+          :icon="Promotion"
+          :loading="advisorRunning"
+          @click="handleRunAdvisor"
+          size="large"
+        >
+          立即运行 AI 分析并推送
+        </el-button>
+        <span class="status-text">
+          分析持仓 → 发邮件到 {{ smtpTo || '未配置' }}
+        </span>
+      </div>
+      <el-alert
+        v-if="advisorResult"
+        type="success"
+        show-icon
+        closable
+        style="margin-bottom: 8px"
+      >
+        <template #title>
+          分析完成 | AI 成功: {{ advisorResult.summary.analysis_ok ? '✅' : '❌' }} |
+          邮件: {{ advisorResult.summary.email_sent ? '✅' : '❌' }}
+        </template>
+      </el-alert>
+      <el-descriptions :column="1" border size="small" title="定时推送">
+        <el-descriptions-item label="分析周期">
+          工作日 09:00 自动分析 + 邮件推送 (OpenClaw cron)
+        </el-descriptions-item>
+        <el-descriptions-item label="模型">
+          {{ advisorDefaultModel }}
+        </el-descriptions-item>
+        <el-descriptions-item label="SMTP 状态">
+          <el-tag :type="smtpConfigured ? 'success' : 'danger'" size="small">
+            {{ smtpConfigured ? '已配置' : '未配置' }}
+          </el-tag>
+        </el-descriptions-item>
+      </el-descriptions>
+    </el-card>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Promotion } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { refreshNav, getNavStatus, backfillPortfolioNav, createSnapshot, backfillSnapshots, backfillNavHistory, backfillHoldingPnl } from '../api/index.js'
 
@@ -211,6 +256,13 @@ const navHistoryBackfilling = ref(false)
 const navHistoryResult = ref(null)
 const holdingPnlBackfilling = ref(false)
 const holdingPnlResult = ref(null)
+
+// Advisor push
+const advisorRunning = ref(false)
+const advisorResult = ref(null)
+const smtpConfigured = ref(false)
+const smtpTo = ref('')
+const advisorDefaultModel = ref('stepfun-ai/step-3.7-flash')
 
 async function handleRefreshNav() {
   refreshing.value = true
@@ -301,8 +353,35 @@ async function handleBackfillHoldingPnl() {
   }
 }
 
+async function handleRunAdvisor() {
+  advisorRunning.value = true
+  advisorResult.value = null
+  try {
+    const resp = await fetch('/api/scheduler/run-advisor?push_email=true')
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    advisorResult.value = await resp.json()
+    ElMessage.success('分析完成' + (advisorResult.value.summary.email_sent ? '，邮件已发送' : ''))
+  } catch (e) {
+    ElMessage.error('分析失败: ' + e.message)
+  } finally {
+    advisorRunning.value = false
+  }
+}
+
+async function loadAdvisorStatus() {
+  try {
+    const resp = await fetch('/api/advisor/status')
+    const data = await resp.json()
+    smtpConfigured.value = data.configured
+  } catch {
+    // ignore
+  }
+  smtpTo.value = '见 .env 配置'
+}
+
 onMounted(() => {
   loadStatus()
+  loadAdvisorStatus()
 })
 </script>
 

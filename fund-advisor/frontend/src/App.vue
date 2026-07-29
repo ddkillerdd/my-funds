@@ -27,6 +27,10 @@
           <el-icon><TrendCharts /></el-icon>
           <span>投资分析</span>
         </el-menu-item>
+        <el-menu-item index="/advisor">
+          <el-icon><MagicStick /></el-icon>
+          <span>AI 顾问</span>
+        </el-menu-item>
         <el-menu-item index="/calendar">
           <el-icon><Calendar /></el-icon>
           <span>收益日历</span>
@@ -56,6 +60,7 @@ import {
   TrendCharts,
   Calendar,
   Setting,
+  MagicStick,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()

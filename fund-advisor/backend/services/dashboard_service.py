@@ -1,7 +1,7 @@
 """Dashboard service - aggregated portfolio data for dashboard."""
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select, func, distinct
 from sqlalchemy.orm import Session
@@ -17,55 +17,81 @@ from backend.schemas.dashboard import (
 )
 
 
+ZERO = Decimal("0")
+
+
 class DashboardService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _get_money_fund_codes(self) -> set[str]:
+        """获取货币基金代码集合。"""
+        rows = self.db.execute(
+            select(Fund.fund_code).where(Fund.fund_type == "货币型")
+        ).scalars().all()
+        return set(rows)
+
     def get_summary(self) -> DashboardSummary:
-        """Get portfolio summary."""
-        # Get active holdings joined with fund info
+        """Get portfolio summary with money fund and decimal fixes."""
+        money_fund_codes = self._get_money_fund_codes()
+
         rows = self.db.execute(
             select(FundHolding, Fund)
             .outerjoin(Fund, FundHolding.fund_code == Fund.fund_code)
             .where(FundHolding.status == 1)
         ).all()
 
-        total_mv = Decimal("0")
-        daily_pnl = Decimal("0")
+        total_mv = ZERO
+        daily_pnl = ZERO
         fund_codes = set()
         platforms = set()
 
         for holding, fund in rows:
-            # Calculate current market value using latest NAV
-            if fund and fund.latest_nav and holding.shares:
-                mv = holding.shares * fund.latest_nav
+            shares = holding.shares or ZERO
+
+            if holding.fund_code in money_fund_codes:
+                # 货币基金：市值 = 份额（每份1元）
+                mv = shares
+                # 日盈亏 = 份额 * 最新万份收益 / 10000
+                if fund and fund.nav_change_pct is not None:
+                    # nav_change_pct 存的是 (万份收益 / 10000 * 100) 即日收益率%
+                    # 反推万份收益 = nav_change_pct / 100 * 10000 = nav_change_pct * 100
+                    # 日盈亏 = shares * (万份收益 / 10000) = shares * (nav_change_pct * 100 / 10000)
+                    #        = shares * nav_change_pct / 100
+                    daily_pnl += shares * fund.nav_change_pct / Decimal("100")
             else:
-                mv = holding.market_value or Decimal("0")
+                # 普通基金
+                if fund and fund.latest_nav and shares:
+                    mv = shares * fund.latest_nav
+                else:
+                    # 兜底：使用导入时的 market_value，确保是 Decimal
+                    mv = ZERO
+                    if holding.market_value is not None:
+                        mv = Decimal(str(holding.market_value))
+
+                # 日盈亏反推：mv * nav_change_pct / (100 + nav_change_pct)
+                if fund and fund.nav_change_pct is not None and mv:
+                    pnl = mv * fund.nav_change_pct / (Decimal("100") + fund.nav_change_pct)
+                    daily_pnl += pnl
+
             total_mv += mv
-
-            # Calculate daily PnL: shares × (today_nav - prev_nav)
-            # nav_change_pct = (today - prev) / prev × 100，反推：
-            # delta = today_nav × nav_change_pct / (100 + nav_change_pct)
-            if fund and fund.nav_change_pct and mv:
-                pnl = mv * fund.nav_change_pct / (Decimal("100") + fund.nav_change_pct)
-                daily_pnl += pnl
-
             fund_codes.add(holding.fund_code)
             platforms.add(holding.platform)
 
         daily_pnl_pct = None
-        if total_mv > 0 and daily_pnl != 0:
-            daily_pnl_pct = daily_pnl / total_mv * Decimal("100")
+        if total_mv > ZERO and daily_pnl != ZERO:
+            daily_pnl_pct = (daily_pnl / total_mv * Decimal("100")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
 
-        # NAV update time
         latest_nav_date = self.db.execute(
             select(func.max(Fund.latest_nav_date))
         ).scalar()
         nav_update_time = str(latest_nav_date) if latest_nav_date else None
 
         return DashboardSummary(
-            total_market_value=total_mv,
-            daily_pnl=daily_pnl,
+            total_market_value=total_mv.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            daily_pnl=daily_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             daily_pnl_pct=daily_pnl_pct,
             total_holdings=len(rows),
             total_funds=len(fund_codes),
@@ -74,7 +100,9 @@ class DashboardService:
         )
 
     def get_platform_distribution(self) -> list[PlatformDistribution]:
-        """Get market value distribution by platform (real-time via latest NAV)."""
+        """Get market value distribution by platform, with money fund handling."""
+        money_fund_codes = self._get_money_fund_codes()
+
         rows = self.db.execute(
             select(FundHolding, Fund)
             .outerjoin(Fund, FundHolding.fund_code == Fund.fund_code)
@@ -83,19 +111,29 @@ class DashboardService:
 
         platform_map: dict[str, dict] = {}
         for holding, fund in rows:
-            if fund and fund.latest_nav and holding.shares:
-                mv = holding.shares * fund.latest_nav
-            else:
-                mv = holding.market_value or Decimal("0")
+            shares = holding.shares or ZERO
 
-            pnl = Decimal("0")
-            if fund and fund.nav_change_pct and mv:
-                pnl = mv * fund.nav_change_pct / (Decimal("100") + fund.nav_change_pct)
+            if holding.fund_code in money_fund_codes:
+                mv = shares
+                pnl = ZERO
+                if fund and fund.nav_change_pct is not None:
+                    pnl = shares * fund.nav_change_pct / Decimal("100")
+            else:
+                if fund and fund.latest_nav and shares:
+                    mv = shares * fund.latest_nav
+                else:
+                    mv = ZERO
+                    if holding.market_value is not None:
+                        mv = Decimal(str(holding.market_value))
+
+                pnl = ZERO
+                if fund and fund.nav_change_pct is not None and mv:
+                    pnl = mv * fund.nav_change_pct / (Decimal("100") + fund.nav_change_pct)
 
             entry = platform_map.setdefault(holding.platform, {
-                "market_value": Decimal("0"),
+                "market_value": ZERO,
                 "count": 0,
-                "daily_pnl": Decimal("0"),
+                "daily_pnl": ZERO,
             })
             entry["market_value"] += mv
             entry["count"] += 1
@@ -105,13 +143,13 @@ class DashboardService:
         results = []
         for platform, entry in platform_map.items():
             mv = entry["market_value"]
-            pct = (mv / total * 100) if total > 0 else Decimal("0")
+            pct = (mv / total * Decimal("100")) if total > ZERO else ZERO
             results.append(PlatformDistribution(
                 platform=platform,
-                market_value=mv,
+                market_value=mv.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
                 count=entry["count"],
                 percentage=round(pct, 2),
-                daily_pnl=entry["daily_pnl"],
+                daily_pnl=entry["daily_pnl"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             ))
         results.sort(key=lambda x: x.market_value, reverse=True)
         return results
@@ -139,6 +177,8 @@ class DashboardService:
 
     def get_top_holdings(self, limit: int = 10) -> list[TopHolding]:
         """Get top N holdings by aggregated market value."""
+        money_fund_codes = self._get_money_fund_codes()
+
         rows = self.db.execute(
             select(
                 FundHolding.fund_code,
@@ -159,11 +199,18 @@ class DashboardService:
                 select(Fund).where(Fund.fund_code == r.fund_code)
             ).scalar_one_or_none()
 
+            total_mv = ZERO
+            if r.total_market_value is not None:
+                total_mv = Decimal(str(r.total_market_value))
+            # 货币基金：市值直接等于份额
+            if fund and r.fund_code in money_fund_codes and r.total_shares:
+                total_mv = r.total_shares
+
             results.append(TopHolding(
                 fund_code=r.fund_code,
                 fund_name=r.fund_name,
-                total_market_value=r.total_market_value or Decimal("0"),
-                total_shares=r.total_shares or Decimal("0"),
+                total_market_value=total_mv.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                total_shares=r.total_shares or ZERO,
                 latest_nav=fund.latest_nav if fund else None,
                 nav_change_pct=fund.nav_change_pct if fund else None,
                 platform_count=r.platform_count or 1,

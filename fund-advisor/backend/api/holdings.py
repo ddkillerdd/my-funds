@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from backend.database import get_db
-from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate
+from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse
 
 router = APIRouter()
 
@@ -49,5 +49,28 @@ def update_holding_cost(
     from backend.services.holding_service import HoldingService
     try:
         return HoldingService(db).update_cost(holding_id, body.cost_nav)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("", response_model=HoldingResponse, status_code=201)
+def create_holding(
+    body: HoldingCreate,
+    db: Session = Depends(get_db),
+):
+    """Create a new manual holding entry."""
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).create_holding(body)
+
+
+@router.delete("/{holding_id}", response_model=HoldingDeleteResponse)
+def delete_holding(
+    holding_id: int,
+    db: Session = Depends(get_db),
+):
+    """Soft delete (set status=0) a holding."""
+    from backend.services.holding_service import HoldingService
+    try:
+        return HoldingService(db).delete_holding(holding_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

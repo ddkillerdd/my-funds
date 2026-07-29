@@ -63,6 +63,14 @@ export function updateHoldingCost(holdingId, costNav) {
   return api.patch(`/holdings/${holdingId}`, { cost_nav: costNav })
 }
 
+export function createHolding(data) {
+  return api.post('/holdings', data)
+}
+
+export function deleteHolding(holdingId) {
+  return api.delete(`/holdings/${holdingId}`)
+}
+
 // ---- Fund APIs ----
 
 export function getFundDetail(code) {
