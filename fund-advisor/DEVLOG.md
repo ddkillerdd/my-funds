@@ -341,3 +341,16 @@ NVIDIA NIM 渠道的 stepfun-ai/step-3.7-flash 和 nvidia-nvidia-nemotron-nano-9
 ### 影响范围
 - 仅修改 `advisor_service.py` 1 行 + 更新 `.env` key
 - 数据库、前端、其他 API 不变
+
+---
+
+## 2026-07-29 23:40 — Phase A: 轮流回退模型链
+
+### 当前情况
+- step-3.7 flash 正常返回（content=null → 取 reasoning）
+- 验证：响应时间 ~40s（冷启动），市场趋势 "震荡"，无持仓分析
+
+### 下一步
+1. 导入真实持仓数据验证完整分析链路
+2. Phase B/C（见 RFC-001）
+

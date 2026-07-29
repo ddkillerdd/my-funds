@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 # Default analysis model (can be overridden)
 DEFAULT_MODEL = "stepfun-ai/step-3.7-flash"
 
+# Fallback model chain (used in order if primary fails)
+FALLBACK_MODELS = [
+    "stepfun-ai/step-3.7-flash",
+    "nvidia/nvidia-nemotron-nano-9b-v2",
+    "minimaxai/minimax-m3",
+]
+
 
 class AdvisorService:
     """AI-powered investment advisor service."""
@@ -35,19 +42,49 @@ class AdvisorService:
 
     # ---------- Public API ----------
 
-    def analyze(self, model: str = DEFAULT_MODEL) -> dict:
-        """Run a full portfolio analysis and return structured results."""
+    def analyze(self, model: str = None) -> dict:
+        """Run a full portfolio analysis and return structured results.
+        
+        Tries models in chain order: primary → fallbacks.
+        Falls through to next model on timeout/error/failed parse.
+        """
+        models_to_try = [model] if model else list(FALLBACK_MODELS)
+        
         portfolio_data = self._build_portfolio_context()
         prompt = self._build_analysis_prompt(portfolio_data)
-        raw = self._call_llm(prompt, model)
-        try:
-            result = self._parse_result(raw)
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Failed to parse LLM result: {e}")
-            result = self._build_error_result(str(e))
+        
+        last_error = None
+        for attempt_model in models_to_try:
+            logger.info(f"Attempting analysis with model: {attempt_model}")
+            raw = self._call_llm(prompt, attempt_model)
+            
+            # Fallback result means LLM call failed entirely
+            if self._is_fallback_result(raw):
+                last_error = f"模型 {attempt_model} 调用失败，尝试下一个"
+                logger.warning(last_error)
+                continue
+            
+            try:
+                result = self._parse_result(raw)
+            except (json.JSONDecodeError, KeyError) as e:
+                last_error = f"模型 {attempt_model} 解析失败: {e}"
+                logger.warning(last_error)
+                continue
+            
+            # Success
+            result["generated_at"] = datetime.now().isoformat()
+            result["model"] = attempt_model
+            result["portfolio_date"] = str(date.today())
+            result["fallback_chain"] = [m for m in models_to_try[:models_to_try.index(attempt_model) + 1]]
+            return result
+        
+        # All models failed
+        logger.error(f"All models failed, last error: {last_error}")
+        result = self._build_error_result(str(last_error))
         result["generated_at"] = datetime.now().isoformat()
-        result["model"] = model
+        result["model"] = models_to_try[0]
         result["portfolio_date"] = str(date.today())
+        result["fallback_chain"] = models_to_try
         return result
 
     # ---------- Context Building ----------
@@ -207,7 +244,7 @@ class AdvisorService:
     # ---------- LLM Call ----------
 
     def _call_llm(self, prompt: str, model: str) -> str:
-        """Call NewAPI with the given prompt."""
+        """Call NewAPI with the given prompt. Returns raw text or fallback JSON."""
         if not self.settings.NEWAPI_BASE_URL or not self.settings.NEWAPI_API_KEY:
             logger.warning("NewAPI not configured, using fallback analysis")
             return self._build_fallback_result()
@@ -237,7 +274,7 @@ class AdvisorService:
             logger.error(f"NewAPI timeout for model {model}")
             return self._build_fallback_result()
         except Exception as e:
-            logger.error(f"NewAPI call failed: {e}")
+            logger.error(f"NewAPI call failed for model {model}: {e}")
             return self._build_fallback_result()
 
     # ---------- Result Parsing ----------
@@ -254,6 +291,16 @@ class AdvisorService:
                 raw = raw[start : end + 1]
 
         return json.loads(raw)
+
+    # ---------- Fallback Detection ----------
+
+    def _is_fallback_result(self, raw: str) -> bool:
+        """Check if the result is a fallback (LLM call failure)."""
+        try:
+            d = json.loads(raw)
+            return d.get("market_analysis", {}).get("trend") == "无法获取"
+        except (json.JSONDecodeError, TypeError):
+            return False
 
     # ---------- Fallback ----------
 

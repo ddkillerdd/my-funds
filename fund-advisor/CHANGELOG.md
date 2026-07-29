@@ -57,3 +57,14 @@
 - NewAPI token 因编码器升级失效，重新创建 fundadvisor-ai token
 - .env NEWAPI_API_KEY 更新为新的 token
 - DEVLOG 新增 2026-07-29 22:00 日志
+
+## [1.1.0] - 2026-07-29
+
+### Added
+- 回退模型链机制：step-3.7 → nemotron-nano-9b → minimax-m3 轮流尝试
+- `fallback_chain` 字段标记本次分析实际使用的模型链路
+
+### Changed
+- advisor_service.analyze() 支持传入模型列表，失败自动切换下一个
+- 新增 `_is_fallback_result()` 判断 LLM 返回是否为兜底
+- 保持原有 API 返回结构不变（前端无感）
