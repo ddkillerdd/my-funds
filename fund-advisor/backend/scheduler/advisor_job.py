@@ -39,8 +39,8 @@ class AdvisorJob:
         analysis_success = ("portfolio_diagnosis" in result
                            and result.get("portfolio_diagnosis", {}).get("overall_assessment") != "无法分析")
         # Check if fallback
-        is_fallback = (result.get("portfolio_diagnosis", {}).get("overall_assessment", "")
-                       and "暂不可用" in result.get("portfolio_diagnosis", {}).get("overall_assessment", ""))
+        assessment = result.get("portfolio_diagnosis", {}).get("overall_assessment", "")
+        is_fallback = ("无法分析" in assessment or "暂不可用" in assessment)
 
         # Step 2: Send email
         email_sent = False

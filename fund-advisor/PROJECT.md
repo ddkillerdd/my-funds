@@ -1710,20 +1710,23 @@ vite: ^6.x
 
 ## 附录 F：部署检查清单
 
-- [ ] Python 3.12+ 已安装
-- [ ] MySQL fund_advisor 数据库已创建
-- [ ] .env 文件配置正确(DB_HOST/PORT/USER/PASSWORD/NAME)
-- [ ] config.py 默认值已被 .env 覆盖
-- [ ] CORS 允许前端 8201 端口
-- [ ] Dockerfile EXPOSE 改为 8200
-- [ ] docker-compose 端口改为 8200/8201
-- [ ] alembic upgrade head 执行成功
-- [ ] 后端 :8200 /health 返回 ok
-- [ ] 前端 :8201 正常加载
-- [ ] 前端 API 代理正常(/api -> :8200)
-- [ ] 东方财富 API 可访问
-- [ ] NewAPI :8443 可访问
+- [x] Python 3.12+ 已安装
+- [x] MySQL fund_advisor 数据库已创建
+- [x] .env 文件配置正确(DB_HOST/PORT/USER/PASSWORD/NAME)
+- [x] config.py 默认值已被 .env 覆盖
+- [x] CORS 允许前端 8201 端口
+- [x] Dockerfile EXPOSE 改为 8200
+- [x] docker-compose 端口改为 8200/8201
+- [x] alembic upgrade head 执行成功
+- [x] 后端 :8200 /health 返回 ok
+- [x] 前端 :8201 正常加载
+- [x] 前端 API 代理正常(/api -> :8200)
+- [x] 东方财富 API 可访问
+- [x] NewAPI :8443 可访问
+- [x] SMTP 邮件配置成功
+- [x] OpenClaw cron 已注册（工作日 09:00）
+- [x] GitHub 已推送
 
 ---
 
-*文档版本: v2.0 | 最后更新: 2026-07-29 | 变更: 完整重写，覆盖全部代码细节*
+*文档版本: v3.0 | 最后更新: 2026-07-29 | 变更: Phase 0-3 全部完成，附录F打勾，新增 SMTP/OpenClaw cron/GitHub 检查项*

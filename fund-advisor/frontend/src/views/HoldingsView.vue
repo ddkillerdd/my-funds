@@ -109,6 +109,29 @@
             </span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="90" align="center">
+          <template #default="{ row }">
+            <el-popconfirm
+              title="确定删除这笔持仓？"
+              confirm-button-text="删除"
+              cancel-button-text="取消"
+              @confirm.stop="handleDelete(row)"
+              @click.stop
+            >
+              <template #reference>
+                <el-button
+                  text
+                  type="danger"
+                  size="small"
+                  :icon="Delete"
+                  @click.stop
+                >
+                  删除
+                </el-button>
+              </template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
       </el-table>
 
       <el-pagination
@@ -260,7 +283,7 @@
 <script setup>
 import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import { Search, Refresh, Edit, Plus } from '@element-plus/icons-vue'
+import { Search, Refresh, Edit, Plus, Delete } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getHoldings,
@@ -364,6 +387,16 @@ function handleSizeChange(size) {
 
 function handleRowClick(row) {
   router.push(`/funds/${row.fund_code}`)
+}
+
+async function handleDelete(row) {
+  try {
+    await deleteHolding(row.id)
+    ElMessage.success(`已删除 ${row.fund_name}`)
+    loadHoldings()
+  } catch {
+    // handled by interceptor
+  }
 }
 
 // ---- Cost Edit ----
