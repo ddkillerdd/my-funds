@@ -2,136 +2,101 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
-## [1.0.0] - 2026-07-29
+## [3.0.0] - 2026-07-30 — FundAnalyzer 独立引擎 + 集成上线
 
 ### Added
-- Phase 0: 环境适配部署（Python 3.12 + MySQL fund_advisor + CORS 适配）
-- Phase 1: Bug 修复（货币基金净值、收益一致性、总资产偏差）
-- Phase 1.2: 手动持仓录入（后端 POST/DELETE + 前端表单弹窗）
-- Phase 2: AI 决策引擎（AdvisorService + NewAPI 集成 + 四大分析维度）
-- Phase 3: 自动化推送（MailService + AdvisorJob + OpenClaw cron 工作日 09:00）
+- **FundAnalyzer** — 独立投资分析引擎包 (`fund-analyzer/`)，零耦合于 FundAdvisor
+  - `engine/models.py` — 32 个 dataclass 定义完整 I/O 协议
+  - `engine/quant.py` — 32 个量化指标 (趋势/MACD/动量/风险/收益/效率/基准)，纯 Python 计算，零 LLM 参与
+  - `engine/portfolio_quant.py` — 相关性矩阵 / HHI 集中度 / 5000 次模拟有效前沿
+  - `engine/prompts.py` — 7 个 Agent 提示模板 (Trend/Risk/Value/Tech/辩论/组合/交叉验证)
+  - `engine/llm_client.py` — 模型回退链 (nemotron → deepseek) + JSON 解析 + 降级函数
+  - `engine/analyzer.py` — 5 步流水线协调器 (量化→4视图→辩论→组合诊断→交叉验证)
+  - 57 个单元测试全部通过
+- **4 视图分析** — 每只基金由 4 个独立 Agent 从不同角度诊断 (Trend/Risk/Value/Technology)
+- **辩论机制** — 4 视图输出汇总给第 5 个 Agent 寻找矛盾、裁决分歧、计算健康度
+- **有效前沿** — 组合层面 5000 次 Monte Carlo 模拟寻找最优权重
+- **交叉验证** — 审计整份报告发现矛盾/幻觉/遗漏/置信度虚高
+
+### Changed
+- **advisor_service.py** 重写为 FundAnalyzer 适配层 (~200 行核心代码)
+  - 默认引擎: v3 (FundAnalyzer)，可通过 `?engine=v2` 降级
+  - DB 数据 → PortfolioInput 适配器
+  - AnalysisReport → API JSON 转换器 (完全兼容前端)
+- **API `/analyze`** 默认走 FundAnalyzer，`?engine=v2` 回退旧引擎
 
 ### Fixed
-- 货币基金万份收益被当作单位净值的 Bug
-- 日历日收益与仪表盘日涨跌不一致的 Bug
-- 总资产被识别为字符串导致统计偏差的 Bug
+- nemotron 推理模型双引号包裹 JSON → 递归解析
+- nemotron content=null 时降级读取 reasoning 字段
+- max_tokens 2048→4096 给推理模型留足空间
+- JSON 边界多候选扫描 → 选 dict 最大者
+- 3 只基金名称从 "基金XXXXXX" 修复为真实名称
 
-### Changed
-- config.py 默认值适配部署环境（Docker MySQL 容器）
-- 前端端口 8200→8201，避免与后端冲突
-- Dockerfile/docker-compose 端口同步修改
-- 新增文件被 git 跟踪并推送至 GitHub
-
-## [1.0.1] - 2026-07-29
-
-### Added
-- 持仓列表删除按钮（el-popconfirm 确认弹窗）
-- PROJECT.md 附录 F 部署清单全部打勾（13+3 项）
-- PROJECT.md §22 演进路线图
-- PROJECT.md §23 项目目录说明
-- docs/ 目录，规范 RFC 先行流程
-- CHANGELOG.md 版本变更摘要
-
-### Fixed
-- .env 中 NEWAPI 配置被 SMTP 编辑覆盖丢失
-- config.py 中 SMTP_TO 字段缺失
-- config.py 缺少 env_file 配置导致 .env 不被自动加载
-- docker-compose.yml.example 仍为旧端口(8000/3000)
-- PROJECT.md 多处与实际代码不一致（config 默认值表、模型列表、目录树）
-- PROJECT.md 中 scheduler/ 和 schemas/ 目录出现重复
-
-### Changed
-- SMTP 配置完成（QQ邮箱 465/SSL）
-- 邮件推送链路验证通过（已产出测试邮件）
-- NewAPI KEY 写入 git credential store，后续 push 免认证
-- PROJECT.md v3.0→v3.2
-
-## [1.0.2] - 2026-07-29
-
-### Fixed
-- NVIDIA NIM 推理模型 content=null 取不到值，AI 分析永远走 fallback
-  - 修复：_call_llm() 从 content 降级到 reasoning 字段
-  - 原因：step-3.7-flash/nemotron 等推理模型的回答在 reasoning 中
-
-### Changed
-- NewAPI token 因编码器升级失效，重新创建 fundadvisor-ai token
-- .env NEWAPI_API_KEY 更新为新的 token
-- DEVLOG 新增 2026-07-29 22:00 日志
-
-## [1.1.0] - 2026-07-29
-
-### Added
-- 回退模型链机制：step-3.7 → nemotron-nano-9b → minimax-m3 轮流尝试
-- `fallback_chain` 字段标记本次分析实际使用的模型链路
-
-### Changed
-- advisor_service.analyze() 支持传入模型列表，失败自动切换下一个
-- 新增 `_is_fallback_result()` 判断 LLM 返回是否为兜底
-- 保持原有 API 返回结构不变（前端无感）
-
-## [1.3.0] - 2026-07-30
-
-### Added
-- 快捷导入功能（RFC-002）：用户只需基金代码 + 持有金额
-- `POST /api/holdings/simple-import` 新 API 端点
-- 前端 ImportView 新增快捷导入卡片
-- docs/RFC-002-simplified-import.md 提案文档
-- 自动从 latest_nav / nav_history 反算份额
-- 无净值时份额标记为 0，等待定时任务补采
-
-## [1.4.0] - 2026-07-30
-
-### Added
-- AI 顾问报告持久化：每次分析报告自动存入 DB，刷新不丢失
-- 新增 `advisor_report` 表（id / report_json / model_used / created_at）
-- `GET /api/advisor/report` — 获取最近报告
-- `GET /api/advisor/report/{id}` — 按 ID 获取指定报告
-- `GET /api/advisor/reports` — 分页列出历史报告元数据
-- 前端左侧历史报告列表 + 点击加载 + 分页浏览
-- `backend/models/advisor_report.py` — 报告模型
-- `docs/report-persistence.md` — 持久化方案文档
-
-### Changed
-- `POST /api/advisor/analyze` 写入报告后自动清理最旧超量记录
-- 后端返回时间统一转为北京时间（CST, UTC+8）
-- `AdvisorView.vue` 重构为左右布局（历史侧栏 + 报告内容）
-- 前后端均配 systemd 保活（`fund-advisor-backend.service` / `fund-advisor-frontend.service`）
-
-### Fixed
-- 前端刷新后报告消失
-- 历史报告中时间显示为 UTC（现正确显示 CST）
+### Performance
+- 4 只基金完整分析: ~775s (22 次 LLM 调用，0 次失败/降级)
+- 模型: nemotron-nano-9b-v2 (1-2s/次)，deepseek-v4-flash 备用
 
 ### Docs
-- docs/report-persistence.md — 完整 API 说明 + 清理策略 + 文件变更清单
-- DEVLOG.md — 追加持久化实现记录
-- CHANGELOG.md — 本次变更
+- docs/RFC-004-quantitative-analysis-engine.md — 量化引擎设计文档
+- docs/report-persistence.md — 报告持久化方案
+- fund-analyzer/README.md + DESIGN.md — 独立引擎文档
+
+---
 
 ## [2.0.0] — 2026-07-30
 
 ### Added
-- **多模型协作分析架构**（RFC-003）— 4 层分析引擎替代旧 1-step prompt
-- **facts_computer.py** — 纯 Python 预计算客观数据（盈亏/占比/集中度/净值趋势），零 LLM 参与
-- **Step1 逐基金分析** — step-3.7-flash 独立分析每只基金，引用具体数据
-- **Step2 组合诊断** — minimax-m3 汇总判断 + 操作建议
-- **Step3 反方验证** — nemotron-nano-9b 检查矛盾 + 争议检测
-- **Step3b 紧急表决** — nemotron-omni-30b 仅在争议时触发，中立裁决
-- 报告新增字段: `ground_truth`（客观数据面板）、`debate_verdict`（验证结论）、`model_chain`（调用链踪）
-- 前端新增 Ground Truth 卡片 + 跨模型验证卡片
+- 多模型协作分析架构 (RFC-003) — 4 层分析引擎
+- Step1 逐基金分析 / Step2 组合诊断 / Step3 反方验证 / Step3b 紧急表决
+- `facts_computer.py` — 纯 Python 预计算客观数据
 
 ### Changed
-- **advisor_service.py** 完全重写（~420 行 → ~560 行），1-step → 4-step 多模型
-- 温度降为 0/0.1（消除随机性）
-- LLM 调用遵守 1.6s 间隔 + 120s 超时（NVIDIA NIM 40次/分钟限制）
-- 每步都有降级路径（超时/解析失败自动切降级方案）
-- `generated_at` 后端直产，不再依赖 LLM
+- 温度降为 0/0.1 (消除随机性)
+- 遵守 1.6s 间隔 + 120s 超时 (NVIDIA NIM 限制)
 
-### Improved
-- 分析耗时从 4s → 35-40s（但质量提升 50%+）
-- 同一持仓生成 4 次，结论一致（消除随机性）
-- 每条建议都引用具体客观数据
-- API 兼容旧版历史报告
+### Archived
+- Step1-3 的 LLM 调用逻辑已被 v3 完全替代
+- `facts_computer.py` 功能由 fund-analyzer/engine/quant.py 覆盖
 
-### Docs
-- docs/RFC-003-multi-agent-analysis.md — 完整设计文档（调研/架构/模型分配/测试计划）
-- DEVLOG.md — 追加实施记录
-- CHANGELOG.md — 本次变更
+---
+
+## [1.4.0] - 2026-07-30
+
+### Added
+- AI 顾问报告持久化 — 不刷新丢失
+- `advisor_report` 表 / GET 接口列表
+- 前端左侧历史侧栏 + 分页
+
+### Changed
+- 时间统一转为北京时间 (CST)
+- systemd 保活前后端
+
+---
+
+## [1.3.0] - 2026-07-30
+
+### Added
+- 快捷导入 (RFC-002): 基金代码 + 持有金额 → 自动反算份额
+
+---
+
+## [1.1.0] - 2026-07-29
+
+### Added
+- 回退模型链: step-3.7 → nemotron-nano-9b → minimax-m3
+
+---
+
+## [1.0.x] — 2026-07-29
+
+### Added
+- Phase 0: 环境适配 (Python 3.12 + Docker MySQL + CORS)
+- Phase 1: Bug 修复 (货币基金净值/收益一致性/资产偏差)
+- Phase 1.2: 手动持仓录入
+- Phase 2: AI 决策引擎 + 四大分析维度
+- Phase 3: 自动化推送 (工作日 09:00)
+
+### Fixed
+- 货币基金万份收益错误
+- NEWAPI 配置被 SMTP 覆盖
+- NVIDIA NIM 推理模型 content=null

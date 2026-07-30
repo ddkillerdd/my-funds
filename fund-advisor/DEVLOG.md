@@ -469,3 +469,41 @@ AI 投资顾问页面每次刷新后报告消失，由用户指出需要持久�
 - 新增 deepseek-v4-flash 备选 (opencode, 推理模型, 2-7s 偶发过载)
 - 分析耗时: 500s (全超时) → 140s (全成功)
 
+
+---
+
+### v5.x — FundAnalyzer v3 集成 (2026-07-30 15:00-18:35)
+
+#### 架构
+- 创建独立包 `fund-analyzer/` (`/root/.openclaw/workspace/fund-analyzer/`)
+- 6 个引擎文件 + 5 个测试文件 → 57 个单元测试全部通过
+- 完全独立于 FundAdvisor (零 ORM/Web 框架依赖)
+
+#### 集成到 FundAdvisor
+- `advisor_service.py` 重写为适配层: DB→PortfolioInput + AnalysisReport→API JSON
+- API `/analyze` 默认 v3, `?engine=v2` 降级旧引擎
+- 保持 v2 兼容字段不变 (前端无感)
+
+#### 修复 (集成过程中)
+1. nemotron 推理模型 `content=null` → 读取 `reasoning` 字段
+2. 双引号包裹 JSON (`"{...}"`) → 递归解析
+3. max_tokens 2048→4096 (给推理留空间)
+4. JSON 边界多候选扫描 → 选 dict 最大者
+5. 3 只基金名称从 "基金XXXXXX" 修复为真实名称
+6. 净值历史不足 → backfill 6,988 条 (252 天 × 4 基金)
+
+#### 性能
+- 22 次 LLM 调用全部成功, 0 降级, 0 失败
+- 总耗时 ~775s (~13 分钟) 完整分析 4 只基金
+- 产出 80+ 条诊断 (每基金 20+ 条) + 9+ 处矛盾发现
+
+#### 关键发现
+- 588760 (科创综指): 波动率 78%, 最大回撤 -59%
+- 161725 (白酒): Sharpe -0.33, 波动率 43% — 效果逆天差
+- 000311 (沪深300增强): 性价比最好, 建议增持 25%→50%
+- 018044 (纳指): 趋势看空但价值面健壮
+
+#### 清理
+- 删除 3 个 v2 测试报告 (bug-report-v2-test*.md)
+- 删除废弃的 facts_computer.py (fund-analyzer/quant.py 已覆盖)
+- CHANGELOG 精简重写, 旧版本折叠为 Archived
