@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMConfig:
-    """LLM API configuration."""
+    """LLM API configuration with multi-model support."""
 
     def __init__(
         self,
@@ -32,16 +32,20 @@ class LLMConfig:
         default_timeout: float = 60.0,
         fallback_timeout: float = 90.0,
         max_retries_per_model: int = 1,
+        # --- v5: 按角色分配模型 ---
+        model_assignments: Optional[Dict[str, str]] = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.primary_model = primary_model
         self.fallback_models = fallback_models or [
-            "opencode-go/deepseek-v4-flash",
+            "deepseek-ai/deepseek-v4-flash",
         ]
         self.default_timeout = default_timeout
         self.fallback_timeout = fallback_timeout
         self.max_retries_per_model = max_retries_per_model
+        # 按步骤/视角指定的模型（优先于 primary_model）
+        self.model_assignments = model_assignments or {}
 
 
 class LLMClient:
@@ -78,9 +82,14 @@ class LLMClient:
         max_tokens: int = 4096,
         timeout: Optional[float] = None,
         step_label: str = "",
+        model: Optional[str] = None,  # v5: override model per call
     ) -> str:
         """
         Call LLM with fallback chain.
+
+        If `model` is given, it overrides the primary and becomes
+        the only model tried (no fallback — caller should handle retry).
+        If `model` is None, the full primary→fallback chain is used.
 
         Returns:
             Raw response text.
@@ -90,9 +99,12 @@ class LLMClient:
         """
         self._call_count += 1
 
-        models_to_try = [self.config.primary_model] + [
-            m for m in self.config.fallback_models if m != self.config.primary_model
-        ]
+        if model:
+            models_to_try = [model]
+        else:
+            models_to_try = [self.config.primary_model] + [
+                m for m in self.config.fallback_models if m != self.config.primary_model
+            ]
 
         last_error = None
 

@@ -310,6 +310,10 @@ class DebateSummary:
     action: Dict[str, any] = field(default_factory=dict)   # {type, confidence, reasoning}
     confidence: float = 0.0
     uncertainties: List[str] = field(default_factory=list)
+    # --- v5: 多模型辩论新增 ---
+    model_sources: Dict[str, str] = field(default_factory=dict)  # {view: model_name}
+    model_reliability: Dict[str, float] = field(default_factory=dict)  # {model: 0-1}
+    conflict_models: List[str] = field(default_factory=list)  # 涉及矛盾最多的模型
 
 
 @dataclass
@@ -424,6 +428,7 @@ class AnalysisReport:
     data_duration_seconds: float = 0.0
     model: str = ""
     model_chain: Dict[str, str] = field(default_factory=dict)
+    model_roles: Dict[str, str] = field(default_factory=dict)  # {step_label: model_name}
     llm_call_count: int = 0
     llm_failure_count: int = 0
     llm_fallback_count: int = 0

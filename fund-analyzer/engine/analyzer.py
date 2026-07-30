@@ -243,28 +243,40 @@ class Analyzer:
 
             # === 4 Viewpoint Analysis ===
             views = self._analyze_4_views(qi)
-            fd.trend_view = views["trend"]
-            fd.risk_view = views["risk"]
-            fd.value_view = views["value"]
-            fd.technical_view = views["technical"]
+            fd.trend_view = views.get("trend")
+            fd.risk_view = views.get("risk")
+            fd.value_view = views.get("value")
+            fd.technical_view = views.get("technical")
+            model_sources = views.get("_model_sources", {})
 
             # Track degradation
             for vname in ["trend", "risk", "value", "technical"]:
-                v = views[vname]
-                if v.uncertainties and any("LLM调用失败" in u for u in v.uncertainties):
+                v = views.get(vname)
+                if v and v.uncertainties and any("LLM调用失败" in u for u in v.uncertainties):
                     fd.degraded = True
                     fd.degraded_steps.append(f"{vname}_{holding.fund_code}")
                     degraded_steps_all.append(f"{vname}_{holding.fund_code}")
 
-            # === Debate ===
-            fd.debate_summary = self._debate_synthesis(
-                qi,
-                views["trend"],
-                views["risk"],
-                views["value"],
-                views["technical"],
-            )
-            if fd.debate_summary.uncertainties and any("LLM调用失败" in u for u in fd.debate_summary.uncertainties):
+            # === Debate (with model sources for cross-model comparison) ===
+            if fd.trend_view and fd.risk_view and fd.value_view and fd.technical_view:
+                fd.debate_summary = self._debate_synthesis(
+                    qi,
+                    fd.trend_view,
+                    fd.risk_view,
+                    fd.value_view,
+                    fd.technical_view,
+                    model_sources=model_sources,
+                )
+            else:
+                # All views failed → pure calculation fallback
+                data = fallback_debate(qi, {}, {}, {}, {})
+                fd.debate_summary = DebateSummary(
+                    health_score=50, health_label="无法评估", confidence=0.3,
+                    model_sources=model_sources, model_reliability={}, conflict_models=[],
+                )
+                fd.degraded = True
+
+            if fd.debate_summary and fd.debate_summary.uncertainties and any("LLM调用失败" in u for u in fd.debate_summary.uncertainties):
                 fd.degraded = True
                 fd.degraded_steps.append(f"debate_{holding.fund_code}")
                 degraded_steps_all.append(f"debate_{holding.fund_code}")
@@ -302,6 +314,7 @@ class Analyzer:
         report.analysis_duration_seconds = round(time.time() - start_time, 1)
         report.model = self.config.primary_model
         report.model_chain = self.llm.models_used
+        report.model_roles = self.llm.config.model_assignments
         report.llm_call_count = self.llm.call_count
         report.llm_failure_count = self.llm.failure_count
         report.llm_fallback_count = self.llm.fallback_count
@@ -347,23 +360,41 @@ class Analyzer:
     # ==========================================================
 
     def _analyze_4_views(self, qi: QuantIndicators) -> Dict[str, Any]:
-        """Run 4 independent viewpoint analyses sequentially."""
-        results = {}
+        """Run 4 independent viewpoint analyses — each possibly with a different model.
 
-        # Trend
+        Model assignment (RFC-005):
+          trend  → omni-30b (2.5x depth, covers short+long)
+          risk   → omni-30b (specific numerical risk data)
+          value  → ds-flash (strongest reasoning for Sharpe/Sortino/Calmar)
+          tech   → nano-9b  (MACD/RSI/BB pattern recognition, 9B enough)
+
+        Fallback per viewpoint: primary fail → secondary model → pure calc
+        """
+        results = {}
+        # Track which model was actually used for each view
+        model_sources: Dict[str, str] = {}
+
+        # --- Trend View: omni-30b → nano-9b → calc ---
+        trend_model = self.llm.config.model_assignments.get("trend", self.llm.config.primary_model)
+        trend_fallback = "nvidia/nvidia-nemotron-nano-9b-v2"
         try:
             prompt = build_trend_prompt(qi)
-            raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096, step_label=f"trend_{qi.fund_code}")
+            try:
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                                     step_label=f"trend_{qi.fund_code}", model=trend_model)
+                model_sources["trend"] = trend_model
+            except Exception:
+                logger.info(f"Trend model {trend_model} failed, falling back to {trend_fallback}")
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                                     step_label=f"trend_{qi.fund_code}_fb", model=trend_fallback)
+                model_sources["trend"] = trend_fallback
             data = parse_json_response(raw)
             if data:
                 results["trend"] = TrendViewDiagnosis(
                     overall_score=data.get("overall_trend_score"),
                     trend_direction=data.get("trend_direction", "unknown"),
                     trend_strength_label=data.get("trend_strength_label", ""),
-                    diagnosis=[
-                        DiagnosisItem(**d) for d in data.get("diagnosis", [])
-                        if isinstance(d, dict)
-                    ],
+                    diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
                     key_risk=data.get("key_risk", ""),
                     key_opportunity=data.get("key_opportunity", ""),
                     confidence=data.get("confidence", 0.5),
@@ -373,6 +404,7 @@ class Analyzer:
                 raise ValueError("Failed to parse JSON")
         except Exception as e:
             logger.warning(f"Trend view failed for {qi.fund_code}: {e}")
+            model_sources["trend"] = "fallback_calc"
             data = fallback_trend_diagnosis(qi)
             results["trend"] = TrendViewDiagnosis(
                 overall_score=data.get("overall_trend_score", 50),
@@ -385,10 +417,18 @@ class Analyzer:
                 uncertainties=data.get("uncertainties", []),
             )
 
-        # Risk
+        # --- Risk View: omni-30b → nano-9b → calc ---
+        risk_model = self.llm.config.model_assignments.get("risk", self.llm.config.primary_model)
         try:
             prompt = build_risk_prompt(qi)
-            raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096, step_label=f"risk_{qi.fund_code}")
+            try:
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                                     step_label=f"risk_{qi.fund_code}", model=risk_model)
+                model_sources["risk"] = risk_model
+            except Exception:
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                                     step_label=f"risk_{qi.fund_code}_fb", model=trend_fallback)
+                model_sources["risk"] = trend_fallback
             data = parse_json_response(raw)
             if data:
                 results["risk"] = RiskViewDiagnosis(
@@ -404,6 +444,7 @@ class Analyzer:
                 raise ValueError("Failed to parse JSON")
         except Exception as e:
             logger.warning(f"Risk view failed for {qi.fund_code}: {e}")
+            model_sources["risk"] = "fallback_calc"
             data = fallback_risk_diagnosis(qi)
             results["risk"] = RiskViewDiagnosis(
                 overall_score=data.get("overall_risk_score", 50),
@@ -415,10 +456,20 @@ class Analyzer:
                 uncertainties=data.get("uncertainties", []),
             )
 
-        # Value
+        # --- Value View: ds-flash → omni-30b → calc ---
+        value_model = self.llm.config.model_assignments.get("value", self.llm.config.primary_model)
+        value_fallback = self.llm.config.model_assignments.get("risk", "nvidia/nvidia-nemotron-nano-9b-v2")
         try:
             prompt = build_value_prompt(qi)
-            raw = self.llm.call(prompt, temperature=0.2, max_tokens=4096, step_label=f"value_{qi.fund_code}")
+            try:
+                raw = self.llm.call(prompt, temperature=0.2, max_tokens=4096,
+                                     step_label=f"value_{qi.fund_code}", model=value_model)
+                model_sources["value"] = value_model
+            except Exception:
+                logger.info(f"Value {value_model} failed, falling back to {value_fallback}")
+                raw = self.llm.call(prompt, temperature=0.2, max_tokens=4096,
+                                     step_label=f"value_{qi.fund_code}_fb", model=value_fallback)
+                model_sources["value"] = value_fallback
             data = parse_json_response(raw)
             if data:
                 results["value"] = ValueViewDiagnosis(
@@ -433,6 +484,7 @@ class Analyzer:
                 raise ValueError("Failed to parse JSON")
         except Exception as e:
             logger.warning(f"Value view failed for {qi.fund_code}: {e}")
+            model_sources["value"] = "fallback_calc"
             data = fallback_value_diagnosis(qi)
             results["value"] = ValueViewDiagnosis(
                 overall_score=data.get("overall_value_score", 50),
@@ -443,10 +495,19 @@ class Analyzer:
                 uncertainties=data.get("uncertainties", []),
             )
 
-        # Technical
+        # --- Technical View: nano-9b → omni-30b → calc ---
+        tech_model = self.llm.config.model_assignments.get("tech", "nvidia/nvidia-nemotron-nano-9b-v2")
+        tech_fallback = self.llm.config.model_assignments.get("trend", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
         try:
             prompt = build_technical_prompt(qi)
-            raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096, step_label=f"tech_{qi.fund_code}")
+            try:
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                                     step_label=f"tech_{qi.fund_code}", model=tech_model)
+                model_sources["tech"] = tech_model
+            except Exception:
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                                     step_label=f"tech_{qi.fund_code}_fb", model=tech_fallback)
+                model_sources["tech"] = tech_fallback
             data = parse_json_response(raw)
             if data:
                 results["technical"] = TechnicalViewDiagnosis(
@@ -461,6 +522,7 @@ class Analyzer:
                 raise ValueError("Failed to parse JSON")
         except Exception as e:
             logger.warning(f"Technical view failed for {qi.fund_code}: {e}")
+            model_sources["tech"] = "fallback_calc"
             data = fallback_technical_diagnosis(qi)
             results["technical"] = TechnicalViewDiagnosis(
                 overall_score=data.get("overall_tech_score", 50),
@@ -471,6 +533,8 @@ class Analyzer:
                 uncertainties=data.get("uncertainties", []),
             )
 
+        # Stash model sources for later use
+        results["_model_sources"] = model_sources
         return results
 
     def _debate_synthesis(
@@ -480,9 +544,20 @@ class Analyzer:
         risk: RiskViewDiagnosis,
         value: ValueViewDiagnosis,
         technical: TechnicalViewDiagnosis,
+        model_sources: Optional[Dict[str, str]] = None,
     ) -> DebateSummary:
-        """Run debate synthesis to find contradictions and reach consensus."""
+        """Run debate synthesis with model-source-aware prompt.
+
+        RFC-005: debates use ds-flash (strongest reasoning), with omni-30b fallback.
+        Two-layer check: signal-level contradictions + model-level reliability.
+        """
+        debate_model = self.llm.config.model_assignments.get("debate", "deepseek-ai/deepseek-v4-flash")
+        debate_fallback = self.llm.config.model_assignments.get("risk", "nvidia/nvidia-nemotron-nano-9b-v2")
+        model_sources = model_sources or {}
+
         try:
+            # Build model-source-enriched prompt
+            source_info = "\n".join(f"- {k} viewpoint: {v}" for k, v in model_sources.items())
             prompt = build_debate_prompt(
                 qi,
                 trend=json.dumps(trend.__dict__, default=str, ensure_ascii=False, indent=2),
@@ -490,7 +565,19 @@ class Analyzer:
                 value=json.dumps(value.__dict__, default=str, ensure_ascii=False, indent=2),
                 technical=json.dumps(technical.__dict__, default=str, ensure_ascii=False, indent=2),
             )
-            raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096, step_label=f"debate_{qi.fund_code}")
+            # Inject model source context into debate prompt
+            prompt += f"\n\n## 模型来源（不同视角由不同AI模型分析）\n{source_info}\n\n请检查：不同模型的判断是否存在系统性偏差？（例如某个模型在回撤极大的基金上仍然给高分）"
+
+            try:
+                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
+                                     step_label=f"debate_{qi.fund_code}", model=debate_model)
+                debate_model_used = debate_model
+            except Exception:
+                logger.info(f"Debate model {debate_model} failed, falling back to {debate_fallback}")
+                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
+                                     step_label=f"debate_{qi.fund_code}_fb", model=debate_fallback)
+                debate_model_used = debate_fallback
+
             data = parse_json_response(raw)
 
             if data:
@@ -508,6 +595,11 @@ class Analyzer:
                     action=data.get("action", {"type": "hold", "confidence": 0.5, "reasoning": ""}),
                     confidence=data.get("confidence", 0.5),
                     uncertainties=data.get("uncertainties", []),
+                    # v5: model-level reliability
+                    model_sources=model_sources,
+                    model_reliability=data.get("model_reliability",
+                        {v: 0.7 if "fallback" not in v else 0.4 for v in set(model_sources.values())}),
+                    conflict_models=data.get("conflict_models", []),
                 )
             else:
                 raise ValueError("Failed to parse JSON")
@@ -525,6 +617,9 @@ class Analyzer:
                 action=data.get("action", {"type": "hold", "confidence": 0.5, "reasoning": ""}),
                 confidence=data.get("confidence", 0.4),
                 uncertainties=data.get("uncertainties", []),
+                model_sources=model_sources,
+                model_reliability={v: 0.4 for v in set(model_sources.values())},
+                conflict_models=[],
             )
 
     def _portfolio_synthesis(
@@ -589,7 +684,16 @@ class Analyzer:
 
         try:
             prompt = build_portfolio_prompt(portfolio_data, fund_summaries)
-            raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096, step_label="portfolio")
+            # Portfolio synthesis uses omni-30b (comprehensive) with nano fallback
+            portfolio_model = self.llm.config.model_assignments.get("portfolio",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
+            portfolio_fallback = "nvidia/nvidia-nemotron-nano-9b-v2"
+            try:
+                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
+                                     step_label="portfolio", model=portfolio_model)
+            except Exception:
+                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
+                                     step_label="portfolio_fb", model=portfolio_fallback)
             data = parse_json_response(raw)
 
             if data:
@@ -645,7 +749,10 @@ class Analyzer:
 
         try:
             prompt = build_cross_validation_prompt(report_text, all_facts)
-            raw = self.llm.call(prompt, temperature=0.0, max_tokens=4096, step_label="cross_val")
+            # Cross-validation uses nano-9b (checklist-like, no deep reasoning needed)
+            crossval_model = self.llm.config.model_assignments.get("cross_val", "nvidia/nvidia-nemotron-nano-9b-v2")
+            raw = self.llm.call(prompt, temperature=0.0, max_tokens=4096,
+                                 step_label="cross_val", model=crossval_model)
             data = parse_json_response(raw)
 
             if data:
