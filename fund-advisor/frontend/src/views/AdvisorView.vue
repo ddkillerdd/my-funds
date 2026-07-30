@@ -141,10 +141,10 @@
                     />
                   </el-col>
                   <el-col :span="6">
-                    <span class="concern-text" v-if="h.concerns">{{ h.concerns }}</span>
+                    <span class="concern-text" v-if="h.concerns">{{ cleanConcerns(h.concerns) }}</span>
                   </el-col>
                   <el-col :span="6">
-                    <span class="suggestion-text" v-if="h.suggestion">{{ h.suggestion }}</span>
+                    <span class="suggestion-text" v-if="h.suggestion">{{ actionLabel(h.suggestion) }}</span>
                   </el-col>
                 </el-row>
               </div>
@@ -177,7 +177,7 @@
                       <el-tag v-if="a.priority === 'high'" type="danger" size="small">高优</el-tag>
                       <el-tag v-else-if="a.priority === 'medium'" type="warning" size="small">中</el-tag>
                     </div>
-                    <p class="action-reason">{{ a.reason }}</p>
+                    <p class="action-reason">{{ cleanEvidence(a.reason) }}</p>
                   </div>
                 </el-timeline-item>
               </el-timeline>
@@ -323,8 +323,8 @@ function healthColor(score) {
 }
 
 function actionType(action) {
-  if (action === 'add') return 'primary'
-  if (action === 'reduce') return 'danger'
+  if (action === 'add' || action === 'increase') return 'primary'
+  if (action === 'reduce' || action === 'decrease') return 'danger'
   if (action === 'watch') return 'warning'
   return 'info'
 }
@@ -332,11 +332,28 @@ function actionType(action) {
 function actionLabel(action) {
   const labels = {
     add: '加仓',
+    increase: '增持',
     reduce: '减仓',
+    decrease: '减持',
     hold: '持有',
     watch: '关注',
   }
   return labels[action] || action
+}
+
+function cleanConcerns(text) {
+  return cleanEvidence(text)
+}
+
+function cleanEvidence(text) {
+  if (!text) return ''
+  // 去掉括号内证据引用: (42.68%)  (MACD柱=-0.00)  (-0.0623)  （年化波动率=15.72%）
+  // 分两步：先删英文括号，再删中文括号
+  return text
+    .replace(/\([^)]*(?:[=≈]|[-+]?\d)[^)]*\)/g, '')
+    .replace(/（[^）]*(?:[=≈]|[-+]?\d)[^）]*）/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function formatTime(iso) {

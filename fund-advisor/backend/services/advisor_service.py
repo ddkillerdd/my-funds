@@ -12,6 +12,7 @@
 
 import json
 import logging
+import re
 import sys
 import time
 from datetime import date, datetime
@@ -77,14 +78,23 @@ class AdvisorService:
         if not portfolio_input.holdings:
             return {"error": "no_holdings", "message": "没有持仓数据"}
 
-        # 2. 创建 Analyzer 并执行
+        # 2. 创建 Analyzer 并执行（RFC-005 多模型分发策略）
         config = LLMConfig(
             api_base=self.settings.NEWAPI_BASE_URL,
             api_key=self.settings.NEWAPI_API_KEY,
             primary_model="nvidia/nvidia-nemotron-nano-9b-v2",
-            fallback_models=["opencode-go/deepseek-v4-flash"],
+            fallback_models=["deepseek-ai/deepseek-v4-flash"],
             default_timeout=60.0,
             fallback_timeout=90.0,
+            model_assignments={
+                "trend": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                "risk": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                "value": "deepseek-ai/deepseek-v4-flash",
+                "tech": "nvidia/nvidia-nemotron-nano-9b-v2",
+                "debate": "deepseek-ai/deepseek-v4-flash",
+                "portfolio": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                "cross_val": "nvidia/nvidia-nemotron-nano-9b-v2",
+            },
         )
         analyzer = Analyzer(config)
         report = analyzer.analyze(portfolio_input)
@@ -242,19 +252,28 @@ class AdvisorService:
         holdings_health = []
         for fd in report.per_fund_diagnosis:
             ds = fd.debate_summary
+            # 清洗 risks：去掉括号里的证据引用
+            clean_risks = []
+            if ds:
+                for r in ds.risks[:3]:
+                    # 去掉括号内证据引用：含等号或纯数字百分比
+                    cleaned = re.sub(r'[（(][^）)]*(?:[=≈]|[-+]?\d)[^）)]*[）)]', '', r)
+                    cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
+                    if cleaned:
+                        clean_risks.append(cleaned)
             holdings_health.append({
                 "fund_code": fd.fund_code,
                 "fund_name": fd.fund_name,
                 "health_score": ds.health_score if ds else 50,
                 "health_diagnosis": ds.health_label if ds else "",
-                "concerns": "; ".join(ds.risks[:3]) if ds else "",
+                "concerns": "; ".join(clean_risks) if ds else "",
                 "suggestion": ds.action.get("type", "hold") if ds and ds.action else "hold",
                 "data_citations": [],
                 # v3 新增字段
                 "v3_consensus": ds.consensus_label if ds else "",
                 "v3_contradictions": len(ds.contradictions) if ds else 0,
                 "v3_strengths": ds.strengths[:3] if ds else [],
-                "v3_risks": ds.risks[:3] if ds else [],
+                "v3_risks": clean_risks if ds else [],
             })
 
         # ---- 操作建议 ----
@@ -262,9 +281,15 @@ class AdvisorService:
         if report.portfolio_diagnosis:
             pd = report.portfolio_diagnosis
             for rs in pd.rebalance_suggestions:
+                # 从持仓中找到基金名
+                fund_name = rs.fund_code
+                for fd in report.per_fund_diagnosis:
+                    if fd.fund_code == rs.fund_code:
+                        fund_name = fd.fund_name
+                        break
                 actions.append({
                     "fund_code": rs.fund_code,
-                    "fund_name": "",  # 前端可能通过 code 匹配
+                    "fund_name": fund_name,
                     "action": rs.action,
                     "priority": "medium",
                     "reason": rs.reason,
@@ -289,6 +314,8 @@ class AdvisorService:
             "concentration_risk": "",
             "rebalance_suggestion": "",
             "overall_assessment": "",
+            "overall_health_score": None,
+            "overall_health_label": "",
             "strength": "",
             "weakness": "",
         }
@@ -296,7 +323,9 @@ class AdvisorService:
             pd = report.portfolio_diagnosis
             portfolio_diag["concentration_risk"] = pd.concentration_risk.get("detail", "") if pd.concentration_risk else ""
             portfolio_diag["rebalance_suggestion"] = pd.efficient_frontier_analysis.get("rebalance_direction", "") if pd.efficient_frontier_analysis else ""
-            portfolio_diag["overall_assessment"] = pd.health_label
+            portfolio_diag["overall_assessment"] = pd.health_label or ""
+            portfolio_diag["overall_health_score"] = pd.overall_health_score
+            portfolio_diag["overall_health_label"] = pd.health_label or ""
             portfolio_diag["strength"] = "; ".join(pd.strengths[:3]) if pd.strengths else ""
             portfolio_diag["weakness"] = "; ".join(pd.weaknesses[:3]) if pd.weaknesses else ""
 
@@ -435,6 +464,10 @@ class AdvisorService:
                     "risks": ds.risks,
                     "action": ds.action,
                     "confidence": ds.confidence,
+                    # v5: 多模型来源
+                    "model_sources": ds.model_sources,
+                    "model_reliability": ds.model_reliability,
+                    "conflict_models": ds.conflict_models,
                 }
 
             # 量化指标（前端展示用）
@@ -475,6 +508,7 @@ class AdvisorService:
             "generated_at": report.generated_at,
             "model": f"FundAnalyzer v3 ({report.model})",
             "model_chain": report.model_chain,
+            "model_roles": getattr(report, 'model_roles', {}),
             "portfolio_date": str(date.today()),
             "analysis_duration_seconds": round(elapsed, 1),
             "data_duration_seconds": report.data_duration_seconds,

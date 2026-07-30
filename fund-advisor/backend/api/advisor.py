@@ -23,6 +23,18 @@ MAX_REPORTS = 30
 CST = timezone(timedelta(hours=8))
 
 
+def _patch_report_actions(data: dict) -> dict:
+    """补全 actions 中空的 fund_name（兼容旧报告）。"""
+    if not data.get('actions'):
+        return data
+    fund_names = {fd.get('fund_code'): fd.get('fund_name', fd.get('fund_code', ''))
+                  for fd in data.get('per_fund_diagnosis', [])}
+    for a in data['actions']:
+        if not a.get('fund_name') and a.get('fund_code'):
+            a['fund_name'] = fund_names.get(a['fund_code'], a['fund_code'])
+    return data
+
+
 def _to_cst(naive_utc_dt: datetime) -> str:
     """将 naive UTC datetime 转为 Asia/Shanghai ISO 时间字符串。"""
     if naive_utc_dt is None:
@@ -92,6 +104,7 @@ def get_latest_report(
             "report": None,
             "message": "已保存的报告数据异常",
         }
+    data = _patch_report_actions(data)
     return {
         "found": True,
         "report": data,
@@ -147,6 +160,8 @@ def get_report_by_id(
             "report": None,
             "message": "该报告数据异常",
         }
+    
+    data = _patch_report_actions(data)
     return {
         "found": True,
         "report": data,
