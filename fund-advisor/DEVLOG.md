@@ -385,3 +385,51 @@ NVIDIA NIM 渠道的 stepfun-ai/step-3.7-flash 和 nvidia-nvidia-nemotron-nano-9
 - 新建的基金如果没有净值记录，份额填 0，等定时任务补采
 - 同一基金+同一平台+同一账户 已存在时自动更新
 
+---
+
+## AI 顾问报告持久化 & 自动清理 (2026-07-30)
+
+### 背景
+AI 投资顾问页面每次刷新后报告消失，由用户指出需要持久化。
+
+### 修改
+
+#### 后端
+- **新增** `backend/models/advisor_report.py` — `AdvisorReport` 模型，存完整 JSON
+- **修改** `backend/api/advisor.py` — `POST /api/advisor/analyze` 写入 DB，新增 `GET /api/advisor/report` 读最新
+- **新增** `advisor_report` 表（`Base.metadata.create_all` 自动创建）
+
+#### 前端
+- **修改** `frontend/src/views/AdvisorView.vue` — `onMounted` 自动调用 `/api/advisor/report` 加载已存报告
+
+#### 清理策略
+- 保存最近 **30 份报告**，旧报告在写入新报告时自动删除
+- 配置项 `ADVISOR_MAX_REPORTS`（默认 30）
+
+### 文档
+- `docs/report-persistence.md` — 持久化方案说明
+
+#### v2 — 增加历史浏览 (2026-07-30 12:54)
+- **新增** `GET /api/advisor/reports` — 分页列出历史报告元数据
+- **新增** `GET /api/advisor/report/{id}` — 按 ID 获取指定报告
+- **改造** 前端 `AdvisorView.vue` — 左侧历史列表 + 点击加载任意报告 + 加载更多
+
+### 验证
+- POST /api/advisor/analyze → 200 ✅
+- GET /api/advisor/report → 返回已存 JSON ✅
+- GET /api/advisor/reports → 返回分页列表 ✅
+- GET /api/advisor/report/3 → 返回指定报告 ✅
+- 刷新页面后报告依然可见 ✅
+- 重复生成≥31次，表内只保留30条 ✅
+
+#### v3 — systemd 保活 + 时区修正 (2026-07-30 12:45)
+- **新增** `/etc/systemd/system/fund-advisor-backend.service` — uvicorn systemd service
+- **新增** `/etc/systemd/system/fund-advisor-frontend.service` — vite dev systemd service
+- 两者均 `enable` 开机自启 + `Restart=on-failure`
+- 后端存储时间显示修正为北京时间（`_to_cst` helper）
+
+### 验证
+- systemctl status 两者均为 active/enabled ✅
+- systemctl restart 后自动恢复 ✅
+- 返回的时间显示为 12:xx（CST）而非 04:xx（UTC）✅
+

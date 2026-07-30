@@ -9,183 +9,230 @@
           <div class="status-info">
             <el-tag v-if="apiConfigured" type="success" size="small">AI 已配置</el-tag>
             <el-tag v-else type="danger" size="small">AI 未配置</el-tag>
-            <span v-if="lastGenerated" class="last-gen">
-              上次分析: {{ lastGenerated }}
+            <span v-if="activeReportTime" class="last-gen">
+              当前报告: {{ activeReportTime }}
             </span>
           </div>
         </el-col>
         <el-col :span="12" style="text-align: right">
           <el-button type="primary" :icon="Promotion" :loading="loading" @click="runAnalysis">
-            {{ loading ? '分析中...' : '生成分析报告' }}
+            {{ loading ? '分析中...' : '生成新报告' }}
           </el-button>
         </el-col>
       </el-row>
     </el-card>
 
-    <!-- Loading State -->
-    <el-skeleton v-if="loading && !report" :rows="8" animated class="skeleton-card" />
-
-    <!-- Error State -->
-    <el-alert
-      v-if="error"
-      :title="error"
-      type="warning"
-      show-icon
-      :closable="true"
-      @close="error = ''"
-    />
-
-    <!-- Report Content -->
-    <template v-if="report">
-      <!-- Market Analysis -->
-      <el-card shadow="hover" class="section-card">
-        <template #header>
-          <div class="section-header">
-            <el-icon :size="20"><Promotion /></el-icon>
-            <span>市场环境分析</span>
+    <!-- Report History Drawer / Sidebar -->
+    <el-row :gutter="16">
+      <el-col :span="6">
+        <el-card shadow="never" class="history-card">
+          <template #header>
+            <div class="section-header">
+              <el-icon :size="18"><Tickets /></el-icon>
+              <span>历史报告（{{ reportHistoryTotal }}）</span>
+            </div>
+          </template>
+          <div v-if="reportHistory.length === 0" class="empty-hint">
+            暂无历史报告
           </div>
-        </template>
-        <div class="market-analysis">
-          <el-row :gutter="16">
-            <el-col :span="8">
-              <div class="analysis-item">
-                <label>趋势判断</label>
-                <span class="value">{{ report.market_analysis.trend }}</span>
-              </div>
-            </el-col>
-            <el-col :span="16">
-              <div class="analysis-item">
-                <label>总体判断</label>
-                <span class="value">{{ report.market_analysis.overall }}</span>
-              </div>
-            </el-col>
-          </el-row>
-          <div v-if="report.market_analysis.key_signals?.length" class="signals">
-            <label>关键信号</label>
-            <el-tag
-              v-for="(s, i) in report.market_analysis.key_signals"
-              :key="i"
-              size="small"
-              style="margin: 2px 4px 2px 0"
+          <div v-else class="history-list">
+            <div
+              v-for="item in reportHistory"
+              :key="item.id"
+              class="history-item"
+              :class="{ active: item.id === activeReportId }"
+              @click="loadReportById(item.id)"
             >
-              {{ s }}
-            </el-tag>
-          </div>
-        </div>
-      </el-card>
-
-      <!-- Holdings Health -->
-      <el-card shadow="hover" class="section-card">
-        <template #header>
-          <div class="section-header">
-            <el-icon :size="20"><List /></el-icon>
-            <span>持仓健康度</span>
-          </div>
-        </template>
-        <div v-if="!report.holdings_health?.length" class="empty-hint">
-          暂无持仓数据或 AI 分析不可用
-        </div>
-        <div v-else class="health-list">
-          <div
-            v-for="h in report.holdings_health"
-            :key="h.fund_code"
-            class="health-item"
-          >
-            <el-row :gutter="16" align="middle">
-              <el-col :span="8">
-                <strong>{{ h.fund_code }}</strong>
-                <span class="fund-name">{{ h.fund_name }}</span>
-              </el-col>
-              <el-col :span="4">
-                <el-progress
-                  :percentage="h.health_score"
-                  :color="healthColor(h.health_score)"
-                  :stroke-width="14"
-                />
-              </el-col>
-              <el-col :span="6">
-                <span class="concern-text" v-if="h.concerns">{{ h.concerns }}</span>
-              </el-col>
-              <el-col :span="6">
-                <span class="suggestion-text" v-if="h.suggestion">{{ h.suggestion }}</span>
-              </el-col>
-            </el-row>
-          </div>
-        </div>
-      </el-card>
-
-      <!-- Action Recommendations -->
-      <el-card shadow="hover" class="section-card">
-        <template #header>
-          <div class="section-header">
-            <el-icon :size="20"><Warning /></el-icon>
-            <span>操作建议</span>
-          </div>
-        </template>
-        <div v-if="!report.actions?.length" class="empty-hint">
-          暂无建议
-        </div>
-        <div v-else class="action-list">
-          <el-timeline>
-            <el-timeline-item
-              v-for="(a, i) in report.actions"
-              :key="i"
-              :type="actionType(a.action)"
-              :hollow="true"
-            >
-              <div class="action-item">
-                <div class="action-header">
-                  <strong>{{ a.fund_name }}</strong>
-                  <span class="action-badge">{{ actionLabel(a.action) }}</span>
-                  <el-tag v-if="a.priority === 'high'" type="danger" size="small">高优</el-tag>
-                  <el-tag v-else-if="a.priority === 'medium'" type="warning" size="small">中</el-tag>
-                </div>
-                <p class="action-reason">{{ a.reason }}</p>
+              <div class="history-date">{{ formatTime(item.created_at) }}</div>
+              <div class="history-model">
+                <el-tag size="small" effect="plain">{{ item.model }}</el-tag>
               </div>
-            </el-timeline-item>
-          </el-timeline>
-        </div>
-      </el-card>
+            </div>
+            <div v-if="hasMoreHistory" class="history-more" @click="loadMoreHistory">
+              加载更多...
+            </div>
+          </div>
+        </el-card>
+      </el-col>
 
-      <!-- Portfolio Diagnosis -->
-      <el-card shadow="hover" class="section-card">
-        <template #header>
-          <div class="section-header">
-            <el-icon :size="20"><DataAnalysis /></el-icon>
-            <span>组合诊断</span>
+      <el-col :span="18">
+        <!-- Loading State -->
+        <el-skeleton v-if="loading && !report" :rows="8" animated class="skeleton-card" />
+
+        <!-- Error State -->
+        <el-alert
+          v-if="error"
+          :title="error"
+          type="warning"
+          show-icon
+          :closable="true"
+          @close="error = ''"
+        />
+
+        <!-- No Report State -->
+        <el-empty v-if="!loading && !report && !activeReportId" description="没有分析报告，点击右侧按钮生成" />
+
+        <!-- Report Content -->
+        <template v-if="report">
+          <!-- Market Analysis -->
+          <el-card shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><Promotion /></el-icon>
+                <span>市场环境分析</span>
+              </div>
+            </template>
+            <div class="market-analysis">
+              <el-row :gutter="16">
+                <el-col :span="8">
+                  <div class="analysis-item">
+                    <label>趋势判断</label>
+                    <span class="value">{{ report.market_analysis.trend }}</span>
+                  </div>
+                </el-col>
+                <el-col :span="16">
+                  <div class="analysis-item">
+                    <label>总体判断</label>
+                    <span class="value">{{ report.market_analysis.overall }}</span>
+                  </div>
+                </el-col>
+              </el-row>
+              <div v-if="report.market_analysis.key_signals?.length" class="signals">
+                <label>关键信号</label>
+                <el-tag
+                  v-for="(s, i) in report.market_analysis.key_signals"
+                  :key="i"
+                  size="small"
+                  style="margin: 2px 4px 2px 0"
+                >
+                  {{ s }}
+                </el-tag>
+              </div>
+            </div>
+          </el-card>
+
+          <!-- Holdings Health -->
+          <el-card shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><List /></el-icon>
+                <span>持仓健康度</span>
+              </div>
+            </template>
+            <div v-if="!report.holdings_health?.length" class="empty-hint">
+              暂无持仓数据或 AI 分析不可用
+            </div>
+            <div v-else class="health-list">
+              <div
+                v-for="h in report.holdings_health"
+                :key="h.fund_code"
+                class="health-item"
+              >
+                <el-row :gutter="16" align="middle">
+                  <el-col :span="8">
+                    <strong>{{ h.fund_code }}</strong>
+                    <span class="fund-name">{{ h.fund_name }}</span>
+                  </el-col>
+                  <el-col :span="4">
+                    <el-progress
+                      :percentage="h.health_score"
+                      :color="healthColor(h.health_score)"
+                      :stroke-width="14"
+                    />
+                  </el-col>
+                  <el-col :span="6">
+                    <span class="concern-text" v-if="h.concerns">{{ h.concerns }}</span>
+                  </el-col>
+                  <el-col :span="6">
+                    <span class="suggestion-text" v-if="h.suggestion">{{ h.suggestion }}</span>
+                  </el-col>
+                </el-row>
+              </div>
+            </div>
+          </el-card>
+
+          <!-- Action Recommendations -->
+          <el-card shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><Warning /></el-icon>
+                <span>操作建议</span>
+              </div>
+            </template>
+            <div v-if="!report.actions?.length" class="empty-hint">
+              暂无建议
+            </div>
+            <div v-else class="action-list">
+              <el-timeline>
+                <el-timeline-item
+                  v-for="(a, i) in report.actions"
+                  :key="i"
+                  :type="actionType(a.action)"
+                  :hollow="true"
+                >
+                  <div class="action-item">
+                    <div class="action-header">
+                      <strong>{{ a.fund_name }}</strong>
+                      <span class="action-badge">{{ actionLabel(a.action) }}</span>
+                      <el-tag v-if="a.priority === 'high'" type="danger" size="small">高优</el-tag>
+                      <el-tag v-else-if="a.priority === 'medium'" type="warning" size="small">中</el-tag>
+                    </div>
+                    <p class="action-reason">{{ a.reason }}</p>
+                  </div>
+                </el-timeline-item>
+              </el-timeline>
+            </div>
+          </el-card>
+
+          <!-- Portfolio Diagnosis -->
+          <el-card shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><DataAnalysis /></el-icon>
+                <span>组合诊断</span>
+              </div>
+            </template>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="集中度风险">
+                {{ report.portfolio_diagnosis.concentration_risk }}
+              </el-descriptions-item>
+              <el-descriptions-item label="调仓建议">
+                {{ report.portfolio_diagnosis.rebalance_suggestion }}
+              </el-descriptions-item>
+              <el-descriptions-item label="整体评价">
+                {{ report.portfolio_diagnosis.overall_assessment }}
+              </el-descriptions-item>
+            </el-descriptions>
+          </el-card>
+
+          <!-- Footer -->
+          <div class="report-footer">
+            报告生成于 {{ report.generated_at }} | 模型: {{ report.model }}
           </div>
         </template>
-        <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="集中度风险">
-            {{ report.portfolio_diagnosis.concentration_risk }}
-          </el-descriptions-item>
-          <el-descriptions-item label="调仓建议">
-            {{ report.portfolio_diagnosis.rebalance_suggestion }}
-          </el-descriptions-item>
-          <el-descriptions-item label="整体评价">
-            {{ report.portfolio_diagnosis.overall_assessment }}
-          </el-descriptions-item>
-        </el-descriptions>
-      </el-card>
-
-      <!-- Footer -->
-      <div class="report-footer">
-        报告生成于 {{ report.generated_at }} | 模型: {{ report.model }}
-      </div>
-    </template>
+      </el-col>
+    </el-row>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Promotion, List, Warning, DataAnalysis } from '@element-plus/icons-vue'
+import { Promotion, List, Warning, DataAnalysis, Tickets } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
 const report = ref(null)
 const error = ref('')
 const apiConfigured = ref(false)
-const lastGenerated = ref('')
+const activeReportId = ref(null)
+const activeReportTime = ref('')
+
+// History state
+const reportHistory = ref([])
+const reportHistoryTotal = ref(0)
+const historySkip = ref(0)
+const hasMoreHistory = ref(false)
+const HISTORY_LIMIT = 20
 
 function healthColor(score) {
   if (score >= 70) return '#67c23a'
@@ -210,6 +257,13 @@ function actionLabel(action) {
   return labels[action] || action
 }
 
+function formatTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 async function runAnalysis() {
   loading.value = true
   error.value = ''
@@ -218,8 +272,11 @@ async function runAnalysis() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     report.value = data
-    lastGenerated.value = data.generated_at
-    ElMessage.success('分析完成')
+    activeReportTime.value = data.generated_at
+    activeReportId.value = null
+    ElMessage.success('分析完成，报告已保存')
+    // Refresh history
+    await loadHistory()
   } catch (e) {
     error.value = '分析请求失败: ' + e.message
     ElMessage.error('分析失败')
@@ -228,7 +285,74 @@ async function runAnalysis() {
   }
 }
 
+async function loadReportById(id) {
+  loading.value = true
+  error.value = ''
+  activeReportId.value = id
+  try {
+    const resp = await fetch(`/api/advisor/report/${id}`)
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    if (data.found) {
+      report.value = data.report
+      activeReportTime.value = data.generated_at
+    } else {
+      error.value = data.message || '报告加载失败'
+      report.value = null
+    }
+  } catch (e) {
+    error.value = '加载报告失败: ' + e.message
+    report.value = null
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadHistory() {
+  try {
+    const resp = await fetch(`/api/advisor/reports?skip=0&limit=${HISTORY_LIMIT}`)
+    if (!resp.ok) return
+    const data = await resp.json()
+    reportHistory.value = data.items
+    reportHistoryTotal.value = data.total
+    historySkip.value = data.items.length
+    hasMoreHistory.value = data.total > data.items.length
+  } catch {
+    // silent
+  }
+}
+
+async function loadMoreHistory() {
+  try {
+    const resp = await fetch(`/api/advisor/reports?skip=${historySkip.value}&limit=${HISTORY_LIMIT}`)
+    if (!resp.ok) return
+    const data = await resp.json()
+    reportHistory.value = [...reportHistory.value, ...data.items]
+    historySkip.value += data.items.length
+    hasMoreHistory.value = data.total > historySkip.value
+  } catch {
+    // silent
+  }
+}
+
 onMounted(async () => {
+  // Load history list
+  await loadHistory()
+
+  // Try to load the latest report
+  try {
+    const resp = await fetch('/api/advisor/report')
+    if (!resp.ok) return
+    const data = await resp.json()
+    if (data.found && data.report) {
+      report.value = data.report
+      activeReportTime.value = data.generated_at
+    }
+  } catch {
+    // silent
+  }
+
+  // Check AI config status
   try {
     const resp = await fetch('/api/advisor/status')
     const data = await resp.json()
@@ -262,7 +386,7 @@ onMounted(async () => {
 }
 
 .last-gen {
-  color: #909399;
+  color: #409eff;
   font-size: 12px;
 }
 
@@ -282,6 +406,56 @@ onMounted(async () => {
   font-size: 16px;
 }
 
+/* History sidebar */
+.history-card {
+  min-height: 400px;
+}
+
+.history-list {
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.history-item {
+  padding: 10px 8px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.history-item:hover {
+  background-color: #f5f7fa;
+}
+
+.history-item.active {
+  background-color: #ecf5ff;
+  border-left: 3px solid #409eff;
+}
+
+.history-date {
+  font-size: 13px;
+  color: #303133;
+  margin-bottom: 4px;
+}
+
+.history-model {
+  font-size: 11px;
+}
+
+.history-more {
+  text-align: center;
+  padding: 10px;
+  color: #409eff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.history-more:hover {
+  background-color: #f5f7fa;
+}
+
+/* Report sections */
 .market-analysis {
   padding: 4px 0;
 }

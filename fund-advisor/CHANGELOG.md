@@ -69,7 +69,7 @@
 - 新增 `_is_fallback_result()` 判断 LLM 返回是否为兜底
 - 保持原有 API 返回结构不变（前端无感）
 
-## [1.2.0] - 2026-07-30
+## [1.3.0] - 2026-07-30
 
 ### Added
 - 快捷导入功能（RFC-002）：用户只需基金代码 + 持有金额
@@ -78,3 +78,30 @@
 - docs/RFC-002-simplified-import.md 提案文档
 - 自动从 latest_nav / nav_history 反算份额
 - 无净值时份额标记为 0，等待定时任务补采
+
+## [1.4.0] - 2026-07-30
+
+### Added
+- AI 顾问报告持久化：每次分析报告自动存入 DB，刷新不丢失
+- 新增 `advisor_report` 表（id / report_json / model_used / created_at）
+- `GET /api/advisor/report` — 获取最近报告
+- `GET /api/advisor/report/{id}` — 按 ID 获取指定报告
+- `GET /api/advisor/reports` — 分页列出历史报告元数据
+- 前端左侧历史报告列表 + 点击加载 + 分页浏览
+- `backend/models/advisor_report.py` — 报告模型
+- `docs/report-persistence.md` — 持久化方案文档
+
+### Changed
+- `POST /api/advisor/analyze` 写入报告后自动清理最旧超量记录
+- 后端返回时间统一转为北京时间（CST, UTC+8）
+- `AdvisorView.vue` 重构为左右布局（历史侧栏 + 报告内容）
+- 前后端均配 systemd 保活（`fund-advisor-backend.service` / `fund-advisor-frontend.service`）
+
+### Fixed
+- 前端刷新后报告消失
+- 历史报告中时间显示为 UTC（现正确显示 CST）
+
+### Docs
+- docs/report-persistence.md — 完整 API 说明 + 清理策略 + 文件变更清单
+- DEVLOG.md — 追加持久化实现记录
+- CHANGELOG.md — 本次变更
