@@ -433,3 +433,39 @@ AI 投资顾问页面每次刷新后报告消失，由用户指出需要持久�
 - systemctl restart 后自动恢复 ✅
 - 返回的时间显示为 12:xx（CST）而非 04:xx（UTC）✅
 
+### v4 — 多模型协作分析引擎 (2026-07-30 13:50)
+- **完全重写** `backend/services/advisor_service.py` — 1-step 单 prompt → 4-step 多模型协作
+- **新增** `backend/services/facts_computer.py` — 纯 Python 预计算事实层
+- **新增** `docs/RFC-003-multi-agent-analysis.md` — 完整设计文档
+- **修改** `frontend/src/views/AdvisorView.vue` — 新增 ground_truth + debate_verdict 卡片
+- 模型调用链: step-3.7 × 5 + minimax-m3 × 1 + nemotron-nano × 1 = 7~8 次/报告
+- 遵守 NVIDIA NIM 40次/分钟限制 (1.6s 间隔)
+- 总耗时 35-40s，每条建议引用具体数据
+
+### 验证
+- POST /api/advisor/analyze 返回 7 字段完整 JSON
+- Step0 facts 与 DB 数据一致
+- Step1 每只基金有独立 health_score + data_citations
+- Step2 包含所有 action + priority + reason
+- Step3 验证 passed=true 或输出 issues
+- Step3b 仲裁仅 step3 失败时触发 (已验证不触发场景)
+- 前端 ground_truth/debate_verdict 卡片正常展示
+
+### v4a — 三次测试 + 修复 (2026-07-30 14:00-14:22)
+- Bug 1-3: `_fund_fallback()` 字段不完整 → KeyError, 已补齐 + 标准化
+- Bug 2: `_compute_trend_signals()` 缺少 long_return_pct → 添加默认值
+- Bug 3: step-3.7 JSON 截断 → max_tokens 2048→4096
+- Bug 4: step-3.7 超时 120s → 45s
+- Bug 7: LLM JSON 字段名不一致 → Step1 解析后标准化补齐
+- Bug 8: step-3.7 生产环境可用性 < 50% → 添加 nemotron-nano 备选模型
+- 备选链: step-3.7 → nemotron-nano → 纯数字降级
+- 新增 `docs/bug-report-v2-test1.md` / `test2.md` / `test3.md` 测试记录
+
+### v4c — 速率调整 + 超时修正 (2026-07-30 14:55)
+- NIM 免费 tier 高峰期单个请求可能 30-60s → 超时 45→90s
+- 间隔 MIN_INTERVAL_SEC 1.6→0 (串行等待已保证速率)
+- 排查: step-3.7 累计 8亿 token、minimax-m3 累计 7.6亿 → NIM 限速
+- 主力模型切换为 nemotron-nano-9b (累计 160万, 1-2s)
+- 新增 deepseek-v4-flash 备选 (opencode, 推理模型, 2-7s 偶发过载)
+- 分析耗时: 500s (全超时) → 140s (全成功)
+

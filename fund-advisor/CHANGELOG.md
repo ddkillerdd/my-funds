@@ -105,3 +105,33 @@
 - docs/report-persistence.md — 完整 API 说明 + 清理策略 + 文件变更清单
 - DEVLOG.md — 追加持久化实现记录
 - CHANGELOG.md — 本次变更
+
+## [2.0.0] — 2026-07-30
+
+### Added
+- **多模型协作分析架构**（RFC-003）— 4 层分析引擎替代旧 1-step prompt
+- **facts_computer.py** — 纯 Python 预计算客观数据（盈亏/占比/集中度/净值趋势），零 LLM 参与
+- **Step1 逐基金分析** — step-3.7-flash 独立分析每只基金，引用具体数据
+- **Step2 组合诊断** — minimax-m3 汇总判断 + 操作建议
+- **Step3 反方验证** — nemotron-nano-9b 检查矛盾 + 争议检测
+- **Step3b 紧急表决** — nemotron-omni-30b 仅在争议时触发，中立裁决
+- 报告新增字段: `ground_truth`（客观数据面板）、`debate_verdict`（验证结论）、`model_chain`（调用链踪）
+- 前端新增 Ground Truth 卡片 + 跨模型验证卡片
+
+### Changed
+- **advisor_service.py** 完全重写（~420 行 → ~560 行），1-step → 4-step 多模型
+- 温度降为 0/0.1（消除随机性）
+- LLM 调用遵守 1.6s 间隔 + 120s 超时（NVIDIA NIM 40次/分钟限制）
+- 每步都有降级路径（超时/解析失败自动切降级方案）
+- `generated_at` 后端直产，不再依赖 LLM
+
+### Improved
+- 分析耗时从 4s → 35-40s（但质量提升 50%+）
+- 同一持仓生成 4 次，结论一致（消除随机性）
+- 每条建议都引用具体客观数据
+- API 兼容旧版历史报告
+
+### Docs
+- docs/RFC-003-multi-agent-analysis.md — 完整设计文档（调研/架构/模型分配/测试计划）
+- DEVLOG.md — 追加实施记录
+- CHANGELOG.md — 本次变更

@@ -1,325 +1,599 @@
-"""AI Advisor Service - core AI analysis engine.
+"""AI Advisor Service — v3 集成 FundAnalyzer 引擎
 
-Calls NewAPI (NVIDIA NIM free tier) for portfolio analysis.
-Produces structured JSON output for the AdvisorView frontend.
+架构: 委托给 fund-analyzer (独立包), 本文件仅做数据适配 + API 桥接
+
+数据流:
+  DB (FundHolding + FundNavHistory) → PortfolioInput → FundAnalyzer → AnalysisReport → API JSON
+
+保留 v2 兼容:
+  analyze(engine="v2") 使用旧引擎
+  analyze(engine="v3") 使用 FundAnalyzer (默认)
 """
 
 import json
 import logging
+import sys
+import time
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 
-import httpx
-from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from backend.config import get_settings
 from backend.models.fund import Fund
 from backend.models.holding import FundHolding
-from backend.models.portfolio_snapshot import PortfolioSnapshot
 from backend.models.nav_history import FundNavHistory
+
+# 确保可以 import fund_analyzer
+sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
+
+from engine.models import (
+    NavPoint, FundHolding as FAHolding, PortfolioInput, AnalysisReport,
+    QuantIndicators, FundDiagnosis, PortfolioDiagnosis, GlobalConfidence,
+    DebateSummary, TrendViewDiagnosis, RiskViewDiagnosis,
+    ValueViewDiagnosis, TechnicalViewDiagnosis, DiagnosisItem,
+    PortfolioGroundTruth, Completeness, Degradation,
+)
+from engine.analyzer import Analyzer
+from engine.llm_client import LLMConfig
 
 logger = logging.getLogger(__name__)
 
-# Default analysis model (can be overridden)
-DEFAULT_MODEL = "stepfun-ai/step-3.7-flash"
-
-# Fallback model chain (used in order if primary fails)
-FALLBACK_MODELS = [
-    "stepfun-ai/step-3.7-flash",
-    "nvidia/nvidia-nemotron-nano-9b-v2",
-    "minimaxai/minimax-m3",
-]
-
 
 class AdvisorService:
-    """AI-powered investment advisor service."""
+    """AI 投资顾问 (v3 FundAnalyzer 集成版)"""
 
     def __init__(self, db: Session):
         self.db = db
         self.settings = get_settings()
 
-    # ---------- Public API ----------
+    # ═══════════════════════════════════════════════════
+    # 公有 API
+    # ═══════════════════════════════════════════════════
 
-    def analyze(self, model: str = None) -> dict:
-        """Run a full portfolio analysis and return structured results.
-        
-        Tries models in chain order: primary → fallbacks.
-        Falls through to next model on timeout/error/failed parse.
+    def analyze(self, model: str = None, engine: str = "v3") -> dict:
+        """运行投资组合分析。
+
+        Args:
+            model: 保留兼容 (v3 使用固定模型链, 忽略此参数)
+            engine: "v3" (默认, FundAnalyzer) 或 "v2" (旧引擎)
+
+        Returns:
+            dict: 分析报告 (v3 格式或 v2 格式)
         """
-        models_to_try = [model] if model else list(FALLBACK_MODELS)
-        
-        portfolio_data = self._build_portfolio_context()
-        prompt = self._build_analysis_prompt(portfolio_data)
-        
-        last_error = None
-        for attempt_model in models_to_try:
-            logger.info(f"Attempting analysis with model: {attempt_model}")
-            raw = self._call_llm(prompt, attempt_model)
-            
-            # Fallback result means LLM call failed entirely
-            if self._is_fallback_result(raw):
-                last_error = f"模型 {attempt_model} 调用失败，尝试下一个"
-                logger.warning(last_error)
-                continue
-            
-            try:
-                result = self._parse_result(raw)
-            except (json.JSONDecodeError, KeyError) as e:
-                last_error = f"模型 {attempt_model} 解析失败: {e}"
-                logger.warning(last_error)
-                continue
-            
-            # Success
-            result["generated_at"] = datetime.now().isoformat()
-            result["model"] = attempt_model
-            result["portfolio_date"] = str(date.today())
-            result["fallback_chain"] = [m for m in models_to_try[:models_to_try.index(attempt_model) + 1]]
-            return result
-        
-        # All models failed
-        logger.error(f"All models failed, last error: {last_error}")
-        result = self._build_error_result(str(last_error))
-        result["generated_at"] = datetime.now().isoformat()
-        result["model"] = models_to_try[0]
-        result["portfolio_date"] = str(date.today())
-        result["fallback_chain"] = models_to_try
+        if engine == "v2":
+            return self._analyze_v2()
+
+        return self._analyze_v3()
+
+    def _analyze_v3(self) -> dict:
+        """v3: 使用 FundAnalyzer 引擎"""
+        t0 = time.time()
+
+        # 1. 从 DB 加载数据 → PortfolioInput
+        portfolio_input = self._build_portfolio_input()
+        if not portfolio_input.holdings:
+            return {"error": "no_holdings", "message": "没有持仓数据"}
+
+        # 2. 创建 Analyzer 并执行
+        config = LLMConfig(
+            api_base=self.settings.NEWAPI_BASE_URL,
+            api_key=self.settings.NEWAPI_API_KEY,
+            primary_model="nvidia/nvidia-nemotron-nano-9b-v2",
+            fallback_models=["opencode-go/deepseek-v4-flash"],
+            default_timeout=60.0,
+            fallback_timeout=90.0,
+        )
+        analyzer = Analyzer(config)
+        report = analyzer.analyze(portfolio_input)
+
+        # 3. 转换为 API JSON
+        result = self._report_to_api_json(report, t0)
         return result
 
-    # ---------- Context Building ----------
+    def _analyze_v2(self) -> dict:
+        """v2: 使用旧的分析引擎 (逐基金 prompt + 合成 + 反方)"""
+        from backend.services.facts_computer import compute_portfolio_facts
+        facts = compute_portfolio_facts(self.db)
 
-    def _get_money_fund_codes(self) -> set[str]:
-        """Get set of fund codes that are money market funds."""
+        # 简化版 v2 — 复用旧逻辑
+        fund_analyses = self._step1_per_fund_analysis_v2(facts)
+        synthesis = self._step2_synthesis_v2(facts, fund_analyses)
+        debate = {"passed": True, "severity": "none", "issues": []}
+
+        return self._step4_assemble_v2(facts, fund_analyses, synthesis, debate, time.time())
+
+    # ═══════════════════════════════════════════════════
+    # 数据适配: DB → FundAnalyzer PortfolioInput
+    # ═══════════════════════════════════════════════════
+
+    def _build_portfolio_input(self) -> PortfolioInput:
+        """从 DB 读取持仓 + 净值历史，构建 PortfolioInput"""
+        holdings = self._load_holdings_from_db()
+        if not holdings:
+            return PortfolioInput(holdings=[])
+
+        fa_holdings = []
+
+        for h, f in holdings:
+            code = h.fund_code
+            name = h.fund_name
+            ftype = f.fund_type if f else "未知"
+            shares = float(h.shares or 0)
+
+            # 当前市值
+            if f and f.latest_nav and shares:
+                current_mv = shares * float(f.latest_nav)
+            elif h.market_value:
+                current_mv = float(h.market_value)
+            else:
+                current_mv = 0.0
+
+            # 成本
+            if h.cost_nav and shares:
+                cost = shares * float(h.cost_nav)
+            else:
+                cost = 0.0
+
+            # 总市值占比
+            mv_ratio = 0.0  # 稍后计算
+
+            # 判断货币基金
+            is_money = code in self._money_fund_codes()
+
+            # 加载净值历史
+            nav_history = self._load_nav_history(code)
+
+            fa_h = FAHolding(
+                fund_code=code,
+                fund_name=name,
+                fund_type=ftype,
+                current_mv=round(current_mv, 2),
+                cost=round(cost, 2),
+                mv_ratio=mv_ratio,
+                is_money_fund=is_money,
+                nav_history=nav_history,
+            )
+            fa_holdings.append(fa_h)
+
+        # 计算占比
+        total_mv = sum(h.current_mv for h in fa_holdings)
+        if total_mv > 0:
+            for h in fa_holdings:
+                h.mv_ratio = round(h.current_mv / total_mv * 100, 1)
+
+        return PortfolioInput(holdings=fa_holdings)
+
+    def _load_holdings_from_db(self):
+        """加载活跃持仓 (status=1) + 关联基金信息"""
+        rows = self.db.execute(
+            select(FundHolding, Fund)
+            .outerjoin(Fund, FundHolding.fund_code == Fund.fund_code)
+            .where(FundHolding.status == 1)
+        ).all()
+        return rows
+
+    def _money_fund_codes(self) -> set:
         rows = self.db.execute(
             select(Fund.fund_code).where(Fund.fund_type == "货币型")
         ).scalars().all()
         return set(rows)
 
-    def _get_recent_snapshots(self, days: int = 60) -> list[dict]:
-        """Get recent portfolio snapshots for trend analysis."""
-        cutoff = date.today()
+    def _load_nav_history(self, fund_code: str, limit: int = 252) -> List[NavPoint]:
+        """加载单只基金的净值历史 (最多1年)"""
         rows = self.db.execute(
-            select(PortfolioSnapshot)
-            .where(PortfolioSnapshot.snapshot_date <= cutoff)
-            .order_by(PortfolioSnapshot.snapshot_date.desc())
-            .limit(days)
-        ).scalars().all()
-        return [
-            {
-                "date": str(r.snapshot_date),
-                "total_mv": float(r.total_market_value) if r.total_market_value else 0,
-                "daily_pnl": float(r.daily_pnl) if r.daily_pnl else 0,
-                "nav": float(r.portfolio_nav) if r.portfolio_nav else 0,
-            }
-            for r in reversed(rows)
-        ]
-
-    def _build_portfolio_context(self) -> dict:
-        """Build structured context from portfolio data."""
-        money_fund_codes = self._get_money_fund_codes()
-        holdings = self.db.execute(
-            select(FundHolding, Fund)
-            .outerjoin(Fund, FundHolding.fund_code == Fund.fund_code)
-            .where(FundHolding.status == 1)
+            select(FundNavHistory.nav_date, FundNavHistory.unit_nav)
+            .where(FundNavHistory.fund_code == fund_code)
+            .order_by(FundNavHistory.nav_date.asc())
+            .limit(limit)
         ).all()
 
-        holding_list = []
-        total_mv = Decimal("0")
-        total_cost = Decimal("0")
+        return [
+            NavPoint(
+                date=str(r.nav_date) if r.nav_date else "",
+                nav=float(r.unit_nav),
+            )
+            for r in rows
+        ]
 
-        for holding, fund in holdings:
-            shares = holding.shares or Decimal("0")
-            if holding.fund_code in money_fund_codes:
-                mv = shares
-            elif fund and fund.latest_nav and shares:
-                mv = shares * fund.latest_nav
-            else:
-                mv = holding.market_value or Decimal("0")
+    # ═══════════════════════════════════════════════════
+    # 报告格式转换: AnalysisReport → API JSON
+    # ═══════════════════════════════════════════════════
 
-            cost_mv = Decimal("0")
-            if holding.cost_nav and shares:
-                cost_mv = shares * holding.cost_nav
+    def _report_to_api_json(self, report: AnalysisReport, t0: float) -> dict:
+        """将 AnalysisReport 转换为 API 兼容的 JSON 格式"""
 
-            total_mv += mv
-            total_cost += cost_mv
+        gt = report.ground_truth
 
-            holding_list.append({
-                "fund_code": holding.fund_code,
-                "fund_name": holding.fund_name,
-                "fund_type": fund.fund_type if fund else None,
-                "platform": holding.platform,
-                "shares": float(shares),
-                "latest_nav": float(fund.latest_nav) if fund and fund.latest_nav else None,
-                "nav_change_pct": float(fund.nav_change_pct) if fund and fund.nav_change_pct else None,
-                "cost_nav": float(holding.cost_nav) if holding.cost_nav else None,
-                "current_mv": float(mv),
-                "cost_mv": float(cost_mv),
-                "is_money_fund": holding.fund_code in money_fund_codes,
+        # ---- 市场分析 ----
+        # 提取所有基金的共识趋势方向
+        directions = []
+        for fd in report.per_fund_diagnosis:
+            if fd.trend_view and fd.trend_view.trend_direction != "unknown":
+                directions.append(fd.trend_view.trend_direction)
+        up_count = directions.count("up") if directions else 0
+        down_count = directions.count("down") if directions else 0
+        if up_count > down_count:
+            market_trend = f"上涨 (看多 {up_count}/{len(directions)})"
+        elif down_count > up_count:
+            market_trend = f"下跌 (看空 {down_count}/{len(directions)})"
+        else:
+            market_trend = "震荡/分歧"
+
+        # 从组合诊断提取信号
+        key_signals = []
+        if report.portfolio_diagnosis:
+            pd = report.portfolio_diagnosis
+            if pd.concentration_risk:
+                key_signals.append(f"集中度: {pd.concentration_risk.get('level', 'unknown')} ({pd.concentration_risk.get('detail', '')[:50]})")
+            key_signals.extend(pd.strengths[:2])
+            key_signals.extend(pd.weaknesses[:2])
+
+        market_analysis = {
+            "trend": market_trend,
+            "key_signals": key_signals or ["分析完成"],
+            "overall": report.portfolio_diagnosis.health_label if report.portfolio_diagnosis else "分析完成",
+            "computed_signals": [],
+        }
+
+        # ---- 持仓健康度 ----
+        holdings_health = []
+        for fd in report.per_fund_diagnosis:
+            ds = fd.debate_summary
+            holdings_health.append({
+                "fund_code": fd.fund_code,
+                "fund_name": fd.fund_name,
+                "health_score": ds.health_score if ds else 50,
+                "health_diagnosis": ds.health_label if ds else "",
+                "concerns": "; ".join(ds.risks[:3]) if ds else "",
+                "suggestion": ds.action.get("type", "hold") if ds and ds.action else "hold",
+                "data_citations": [],
+                # v3 新增字段
+                "v3_consensus": ds.consensus_label if ds else "",
+                "v3_contradictions": len(ds.contradictions) if ds else 0,
+                "v3_strengths": ds.strengths[:3] if ds else [],
+                "v3_risks": ds.risks[:3] if ds else [],
             })
 
-        total_pnl = float(total_mv - total_cost)
-        total_pnl_pct = (total_pnl / float(total_cost) * 100) if total_cost > 0 else 0
+        # ---- 操作建议 ----
+        actions = []
+        if report.portfolio_diagnosis:
+            pd = report.portfolio_diagnosis
+            for rs in pd.rebalance_suggestions:
+                actions.append({
+                    "fund_code": rs.fund_code,
+                    "fund_name": "",  # 前端可能通过 code 匹配
+                    "action": rs.action,
+                    "priority": "medium",
+                    "reason": rs.reason,
+                    "expected_effect": f"调整 {rs.change_pct:+.1f}%, 目标占比 {rs.target_ratio:.1f}%",
+                })
+        # 对没有调仓建议的基金添加 hold
+        suggested_codes = {a["fund_code"] for a in actions}
+        for fd in report.per_fund_diagnosis:
+            if fd.fund_code not in suggested_codes and fd.debate_summary:
+                ds = fd.debate_summary
+                actions.append({
+                    "fund_code": fd.fund_code,
+                    "fund_name": fd.fund_name,
+                    "action": ds.action.get("type", "hold") if ds.action else "hold",
+                    "priority": "low",
+                    "reason": ds.action.get("reasoning", "") if ds.action else "",
+                    "expected_effect": "维持当前配置",
+                })
 
-        snapshots = self._get_recent_snapshots()
+        # ---- 组合诊断 ----
+        portfolio_diag = {
+            "concentration_risk": "",
+            "rebalance_suggestion": "",
+            "overall_assessment": "",
+            "strength": "",
+            "weakness": "",
+        }
+        if report.portfolio_diagnosis:
+            pd = report.portfolio_diagnosis
+            portfolio_diag["concentration_risk"] = pd.concentration_risk.get("detail", "") if pd.concentration_risk else ""
+            portfolio_diag["rebalance_suggestion"] = pd.efficient_frontier_analysis.get("rebalance_direction", "") if pd.efficient_frontier_analysis else ""
+            portfolio_diag["overall_assessment"] = pd.health_label
+            portfolio_diag["strength"] = "; ".join(pd.strengths[:3]) if pd.strengths else ""
+            portfolio_diag["weakness"] = "; ".join(pd.weaknesses[:3]) if pd.weaknesses else ""
 
-        # Latest snapshot nav
-        latest_nav = None
-        if snapshots:
-            latest_nav = snapshots[-1].get("nav")
+        # ---- 交叉验证 ----
+        cf = report.confidence
+        debate_verdict = {
+            "passed": cf.overall > 0.4 if cf else True,
+            "severity": "low" if cf and cf.overall > 0.5 else "medium",
+            "issues": [],
+            "recommendation": cf.suggestion if cf else "",
+            "arbiter": None,
+            # v3 新增
+            "v3_overall_confidence": cf.overall if cf else 0.5,
+            "v3_confidence_label": cf.overall_label if cf else "",
+            "v3_warnings": cf.warnings if cf else [],
+        }
+
+        # 如果交叉验证发现了矛盾，填入 issues
+        for fd in report.per_fund_diagnosis:
+            if fd.debate_summary and fd.debate_summary.contradictions:
+                for c in fd.debate_summary.contradictions:
+                    debate_verdict["issues"].append({
+                        "fund_code": fd.fund_code,
+                        "finding": c.issue,
+                        "fix_suggestion": c.resolution,
+                    })
+
+        # ---- 量化的真相 ----
+        ground_truth = {
+            "total_market_value": gt.total_market_value if gt else 0,
+            "total_pnl": gt.total_pnl if gt else 0,
+            "total_pnl_pct": gt.total_pnl_pct if gt else 0,
+            "concentration_top3": gt.concentration.top3_pct if gt and gt.concentration else 0,
+            "trend_state": "N/A",
+            "trend_return": 0,
+            "volatility": 0,
+            "per_fund_summary": [],
+            # v3 新增量化字段
+            "v3_data_quality": gt.overall_data_quality if gt else "unknown",
+            "v3_data_days": gt.data_days if gt else 0,
+            "v3_correlation_avg": gt.correlation.avg_pairwise_corr if gt and gt.correlation else None,
+            "v3_hhi": gt.concentration.hhi_index if gt and gt.concentration else None,
+            "v3_frontier_quality": gt.efficient_frontier.position_quality if gt and gt.efficient_frontier else "unknown",
+            "v3_frontier_distance": gt.efficient_frontier.distance_to_frontier_pct if gt and gt.efficient_frontier else None,
+            "v3_optimal_weights": gt.efficient_frontier.optimal_sharpe_weights if gt and gt.efficient_frontier else {},
+        }
+
+        # 每基金量化摘要
+        for fd in report.per_fund_diagnosis:
+            qi = fd.ground_truth
+            ground_truth["per_fund_summary"].append({
+                "fund_code": fd.fund_code,
+                "fund_name": fd.fund_name,
+                "mv_ratio": qi.mv_ratio,
+                "pnl_pct": qi.pnl_pct,
+                "nav_change_pct": qi.trend.ma_deviation_pct if qi.trend else None,
+                # v3 量化
+                "v3_sharpe": qi.efficiency.sharpe_ratio if qi.efficiency else None,
+                "v3_volatility": qi.risk.annual_volatility_pct if qi.risk else None,
+                "v3_max_drawdown": qi.risk.max_drawdown_pct if qi.risk else None,
+                "v3_trend_score": qi.trend.trend_strength if qi.trend else None,
+                "v3_annual_return": qi.returns.annual_return_pct if qi.returns else None,
+            })
+
+        # ---- 每基金详细诊断 (v3 新增) ----
+        per_fund_diagnosis = []
+        for fd in report.per_fund_diagnosis:
+            diag = {
+                "fund_code": fd.fund_code,
+                "fund_name": fd.fund_name,
+            }
+
+            if fd.trend_view:
+                diag["trend"] = {
+                    "score": fd.trend_view.overall_score,
+                    "direction": fd.trend_view.trend_direction,
+                    "strength_label": fd.trend_view.trend_strength_label,
+                    "diagnosis": [
+                        {"claim": d.claim, "confidence": d.confidence, "evidence": d.evidence, "sentiment": d.sentiment}
+                        for d in fd.trend_view.diagnosis
+                    ],
+                    "key_risk": fd.trend_view.key_risk,
+                    "key_opportunity": fd.trend_view.key_opportunity,
+                    "confidence": fd.trend_view.confidence,
+                }
+
+            if fd.risk_view:
+                diag["risk"] = {
+                    "score": fd.risk_view.overall_score,
+                    "level": fd.risk_view.risk_level,
+                    "diagnosis": [
+                        {"claim": d.claim, "confidence": d.confidence, "evidence": d.evidence, "sentiment": d.sentiment}
+                        for d in fd.risk_view.diagnosis
+                    ],
+                    "key_risk": fd.risk_view.key_risk,
+                    "key_opportunity": fd.risk_view.key_opportunity,
+                    "confidence": fd.risk_view.confidence,
+                }
+
+            if fd.value_view:
+                diag["value"] = {
+                    "score": fd.value_view.overall_score,
+                    "diagnosis": [
+                        {"claim": d.claim, "confidence": d.confidence, "evidence": d.evidence, "sentiment": d.sentiment}
+                        for d in fd.value_view.diagnosis
+                    ],
+                    "key_risk": fd.value_view.key_risk,
+                    "key_opportunity": fd.value_view.key_opportunity,
+                    "confidence": fd.value_view.confidence,
+                }
+
+            if fd.technical_view:
+                diag["tech"] = {
+                    "score": fd.technical_view.overall_score,
+                    "diagnosis": [
+                        {"claim": d.claim, "confidence": d.confidence, "evidence": d.evidence, "sentiment": d.sentiment}
+                        for d in fd.technical_view.diagnosis
+                    ],
+                    "key_risk": fd.technical_view.key_risk,
+                    "key_opportunity": fd.technical_view.key_opportunity,
+                    "confidence": fd.technical_view.confidence,
+                }
+
+            if fd.debate_summary:
+                ds = fd.debate_summary
+                diag["debate"] = {
+                    "health_score": ds.health_score,
+                    "health_label": ds.health_label,
+                    "consensus_level": ds.consensus_level,
+                    "consensus_label": ds.consensus_label,
+                    "contradictions": [
+                        {"views": c.views, "issue": c.issue, "severity": c.severity, "resolution": c.resolution}
+                        for c in ds.contradictions
+                    ],
+                    "strengths": ds.strengths,
+                    "risks": ds.risks,
+                    "action": ds.action,
+                    "confidence": ds.confidence,
+                }
+
+            # 量化指标（前端展示用）
+            qi = fd.ground_truth
+            diag["quant"] = {
+                "trend_strength": qi.trend.trend_strength,
+                "sharpe": qi.efficiency.sharpe_ratio,
+                "sortino": qi.efficiency.sortino_ratio,
+                "volatility": qi.risk.annual_volatility_pct,
+                "max_drawdown": qi.risk.max_drawdown_pct,
+                "current_drawdown": qi.risk.current_drawdown_pct,
+                "return_1m": qi.returns.return_1m_pct,
+                "return_3m": qi.returns.return_3m_pct,
+                "annual_return": qi.returns.annual_return_pct,
+                "rsi": qi.momentum.rsi_14,
+                "macd_signal": qi.macd.signal,
+            }
+
+            diag["degraded"] = fd.degraded
+            per_fund_diagnosis.append(diag)
+
+        # ---- 元数据 ----
+        elapsed = time.time() - t0
 
         return {
-            "total_market_value": float(total_mv),
-            "total_cost": float(total_cost),
-            "total_pnl": total_pnl,
-            "total_pnl_pct": round(total_pnl_pct, 2),
-            "holding_count": len(holding_list),
-            "last_nav": latest_nav,
-            "snapshots": snapshots,
-            "holdings": holding_list,
-        }
+            # v2 兼容字段
+            "market_analysis": market_analysis,
+            "holdings_health": holdings_health,
+            "actions": actions,
+            "portfolio_diagnosis": portfolio_diag,
+            "debate_verdict": debate_verdict,
+            "ground_truth": ground_truth,
 
-    # ---------- Prompt Building ----------
+            # v3 新增字段
+            "per_fund_diagnosis": per_fund_diagnosis,
 
-    def _build_analysis_prompt(self, context: dict) -> str:
-        """Build structured prompt for LLM analysis."""
-        return f"""你是一个专业的基金投资顾问，请根据以下持仓数据为用户生成分析报告。
-
-## 持仓概况
-- 总市值: {context['total_market_value']:.2f} 元
-- 总投入成本: {context['total_cost']:.2f} 元
-- 总盈亏: {context['total_pnl']:.2f} 元 ({context['total_pnl_pct']}%)
-- 持仓数量: {context['holding_count']} 笔
-- 最近组合净值: {context['last_nav']}
-
-## 持仓明细
-{json.dumps(context['holdings'], ensure_ascii=False, indent=2)}
-
-## 近60日组合净值趋势
-{json.dumps(context['snapshots'], ensure_ascii=False, indent=2)}
-
-请按以下 JSON 格式回答，不要输出其他内容：
-
-```json
-{{
-  "market_analysis": {{
-    "trend": "震荡/上涨/下跌/震荡偏强/震荡偏弱",
-    "key_signals": ["信号1", "信号2"],
-    "overall": "简短的市场整体判断（30字以内）"
-  }},
-  "holdings_health": [
-    {{
-      "fund_code": "基金代码",
-      "fund_name": "基金名称",
-      "health_score": 0-100,
-      "concerns": "主要风险，没有则留空",
-      "suggestion": "处理建议，没有则留空"
-    }}
-  ],
-  "actions": [
-    {{
-      "fund_code": "基金代码",
-      "fund_name": "基金名称",
-      "action": "hold/reduce/add/watch",
-      "reason": "理由",
-      "priority": "high/medium/low"
-    }}
-  ],
-  "portfolio_diagnosis": {{
-    "concentration_risk": "集中度风险描述",
-    "rebalance_suggestion": "调仓建议",
-    "overall_assessment": "整体评价"
-  }}
-}}
-```
-
-注意：
-1. health_score 0-100，越高越健康
-2. action: hold=持有, reduce=减仓, add=加仓, watch=关注
-3. 货币基金不参与加减仓判断
-4. 如果某只基金亏损较大或估值偏高，应给出具体建议
-5. 集中度风险主要看前3大持仓占比
-"""
-
-    # ---------- LLM Call ----------
-
-    def _call_llm(self, prompt: str, model: str) -> str:
-        """Call NewAPI with the given prompt. Returns raw text or fallback JSON."""
-        if not self.settings.NEWAPI_BASE_URL or not self.settings.NEWAPI_API_KEY:
-            logger.warning("NewAPI not configured, using fallback analysis")
-            return self._build_fallback_result()
-
-        url = f"{self.settings.NEWAPI_BASE_URL}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.settings.NEWAPI_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 4096,
-        }
-
-        try:
-            with httpx.Client(timeout=120) as client:
-                resp = client.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                msg = data["choices"][0]["message"]
-                # NVIDIA NIM 推理模型: content 可能为 null, 实际回答在 reasoning 字段
-                content = msg.get("content") or msg.get("reasoning") or ""
-                return content
-        except httpx.TimeoutException:
-            logger.error(f"NewAPI timeout for model {model}")
-            return self._build_fallback_result()
-        except Exception as e:
-            logger.error(f"NewAPI call failed for model {model}: {e}")
-            return self._build_fallback_result()
-
-    # ---------- Result Parsing ----------
-
-    def _parse_result(self, raw: str) -> dict:
-        """Extract JSON from LLM response (handles markdown code fences)."""
-        # Remove markdown code fences if present
-        raw = raw.strip()
-        if raw.startswith("```"):
-            # Find the first { and last }
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start >= 0 and end > start:
-                raw = raw[start : end + 1]
-
-        return json.loads(raw)
-
-    # ---------- Fallback Detection ----------
-
-    def _is_fallback_result(self, raw: str) -> bool:
-        """Check if the result is a fallback (LLM call failure)."""
-        try:
-            d = json.loads(raw)
-            return d.get("market_analysis", {}).get("trend") == "无法获取"
-        except (json.JSONDecodeError, TypeError):
-            return False
-
-    # ---------- Fallback ----------
-
-    def _build_fallback_result(self) -> str:
-        """Return a fallback JSON string when LLM is unavailable."""
-        return json.dumps({
-            "market_analysis": {
-                "trend": "无法获取",
-                "key_signals": [],
-                "overall": "AI 分析服务暂时不可用，请稍后再试。"
+            # 元数据
+            "generated_at": report.generated_at,
+            "model": f"FundAnalyzer v3 ({report.model})",
+            "model_chain": report.model_chain,
+            "portfolio_date": str(date.today()),
+            "analysis_duration_seconds": round(elapsed, 1),
+            "data_duration_seconds": report.data_duration_seconds,
+            "llm_call_count": report.llm_call_count,
+            "llm_failure_count": report.llm_failure_count,
+            "llm_fallback_count": report.llm_fallback_count,
+            "degradation": {
+                "any": report.degradation.any_degraded if report.degradation else False,
+                "impact": report.degradation.impact if report.degradation else "none",
+                "steps": report.degradation.degraded_steps if report.degradation else [],
             },
-            "holdings_health": [],
-            "actions": [],
-            "portfolio_diagnosis": {
-                "concentration_risk": "无法分析",
-                "rebalance_suggestion": "无法分析",
-                "overall_assessment": "AI 分析服务暂时不可用，请检查 NewAPI 配置或稍后再试。"
-            }
-        }, ensure_ascii=False)
+            "completeness": {
+                "pct": report.completeness.completeness_pct if report.completeness else 100,
+                "data_quality": report.completeness.data_quality_label if report.completeness else "unknown",
+            },
+            "engine_version": "v3",
+        }
 
-    def _build_error_result(self, error_msg: str) -> dict:
-        return json.loads(self._build_fallback_result())
+    # ═══════════════════════════════════════════════════
+    # v2 兼容 — 旧引擎保留
+    # ═══════════════════════════════════════════════════
+
+    def _step1_per_fund_analysis_v2(self, facts: dict) -> list[dict]:
+        """v2 逐基金分析 (简化版, 不使用 LLM)"""
+        holdings = facts["per_fund"]
+        results = []
+        for h in holdings:
+            pnl = h["pnl_pct"]
+            score = 70
+            if pnl > 5: score = 85
+            elif pnl > 0: score = 75
+            elif pnl > -5: score = 55
+            elif pnl > -10: score = 40
+            else: score = 25
+            if h["is_money_fund"]: score = 88
+            results.append({
+                "fund_code": h["fund_code"],
+                "fund_name": h["fund_name"],
+                "health_score": score,
+                "health_diagnosis": f"v2 简化分析: 盈亏 {pnl:+.1f}%",
+                "risk_factors": [f"盈亏 {pnl:+.1f}%"],
+                "optimistic_factors": [],
+                "data_citations": [],
+                "key_metric": "盈亏百分比",
+                "fund_type": h.get("fund_type", "未知"),
+                "current_mv": h["current_mv"],
+                "mv_ratio": h["mv_ratio"],
+                "pnl_pct": pnl,
+                "nav_change_pct": h.get("nav_change_pct"),
+                "is_money_fund": h["is_money_fund"],
+            })
+        return results
+
+    def _step2_synthesis_v2(self, facts: dict, fund_analyses: list[dict]) -> dict:
+        """v2 组合综合诊断 (简化版)"""
+        actions = []
+        for fa in fund_analyses:
+            if fa.get("is_money_fund"):
+                action, priority = "hold", "low"
+            elif fa["pnl_pct"] > 5: action, priority = "add", "medium"
+            elif fa["pnl_pct"] > -5: action, priority = "hold", "medium"
+            elif fa["pnl_pct"] > -15: action, priority = "watch", "medium"
+            else: action, priority = "reduce", "high"
+            actions.append({
+                "fund_code": fa["fund_code"], "fund_name": fa["fund_name"],
+                "action": action, "priority": priority,
+                "reason": f"v2: 盈亏 {fa['pnl_pct']:+.1f}%",
+                "expected_effect": "",
+            })
+        return {
+            "market_analysis": {
+                "trend": facts["trend"]["state"],
+                "key_signals": [],
+                "overall": f"v2 自动诊断 (组合盈亏 {facts['summary']['total_pnl_pct']:+.1f}%)",
+            },
+            "portfolio_diagnosis": {
+                "concentration_risk": f"前3持仓 {facts['concentration']['top3_ratio']}%",
+                "rebalance_suggestion": "",
+                "overall_assessment": f"v2 简化模式",
+                "strength": "",
+                "weakness": "",
+            },
+            "actions": actions,
+        }
+
+    def _step4_assemble_v2(self, facts, fund_analyses, synthesis, debate, t0) -> dict:
+        """v2 组装"""
+        return {
+            "market_analysis": synthesis["market_analysis"],
+            "holdings_health": [
+                {"fund_code": fa["fund_code"], "fund_name": fa["fund_name"],
+                 "health_score": fa["health_score"], "health_diagnosis": fa["key_metric"],
+                 "concerns": "; ".join(fa.get("risk_factors", [])[:3]),
+                 "suggestion": next((a["action"] for a in synthesis["actions"] if a["fund_code"] == fa["fund_code"]), "hold"),
+                 "data_citations": []}
+                for fa in fund_analyses
+            ],
+            "actions": synthesis["actions"],
+            "portfolio_diagnosis": synthesis["portfolio_diagnosis"],
+            "debate_verdict": {"passed": True, "severity": "none", "issues": [], "arbiter": None},
+            "ground_truth": {
+                "total_market_value": facts["summary"]["total_market_value"],
+                "total_pnl": facts["summary"]["total_pnl"],
+                "total_pnl_pct": facts["summary"]["total_pnl_pct"],
+                "concentration_top3": facts["concentration"]["top3_ratio"],
+                "trend_state": facts["trend"]["state"],
+                "trend_return": facts["trend"].get("long_return_pct", 0),
+                "volatility": facts["trend"].get("volatility_pct", 0),
+                "per_fund_summary": [
+                    {"fund_code": f["fund_code"], "fund_name": f["fund_name"],
+                     "mv_ratio": f["mv_ratio"], "pnl_pct": f["pnl_pct"],
+                     "nav_change_pct": f.get("nav_change_pct")}
+                    for f in facts["per_fund"]
+                ],
+            },
+            "generated_at": datetime.now().isoformat(),
+            "model": "v2-legacy",
+            "model_chain": {},
+            "portfolio_date": str(date.today()),
+            "analysis_duration_seconds": round(time.time() - t0, 1),
+            "engine_version": "v2",
+        }

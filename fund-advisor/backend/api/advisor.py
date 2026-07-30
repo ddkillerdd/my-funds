@@ -36,12 +36,13 @@ def _to_cst(naive_utc_dt: datetime) -> str:
 
 @router.post("/analyze")
 def analyze_portfolio(
-    model: str = Query(DEFAULT_MODEL, description="LLM model for analysis"),
+    model: str = Query(DEFAULT_MODEL, description="LLM model for analysis (v2 only)"),
+    engine: str = Query("v3", description="Engine: v3 (FundAnalyzer, default) or v2 (legacy)"),
     db: Session = Depends(get_db),
 ):
     """Run a full AI-powered portfolio analysis and persist the result."""
     from backend.services.advisor_service import AdvisorService
-    result = AdvisorService(db).analyze(model=model)
+    result = AdvisorService(db).analyze(model=model, engine=engine)
 
     # Persist to database
     report = AdvisorReport(

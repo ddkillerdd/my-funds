@@ -202,12 +202,94 @@
               <el-descriptions-item label="整体评价">
                 {{ report.portfolio_diagnosis.overall_assessment }}
               </el-descriptions-item>
+              <el-descriptions-item v-if="report.portfolio_diagnosis.strength" label="最大优势">
+                {{ report.portfolio_diagnosis.strength }}
+              </el-descriptions-item>
+              <el-descriptions-item v-if="report.portfolio_diagnosis.weakness" label="最大弱点">
+                {{ report.portfolio_diagnosis.weakness }}
+              </el-descriptions-item>
             </el-descriptions>
+          </el-card>
+
+          <!-- Debate Verdict -->
+          <el-card v-if="report.debate_verdict" shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><WarnTriangleFilled v-if="!report.debate_verdict.passed" /><CircleCheckFilled v-else /></el-icon>
+                <span>跨模型验证</span>
+                <el-tag v-if="report.debate_verdict.severity === 'high'" type="danger" size="small">严重</el-tag>
+                <el-tag v-else-if="report.debate_verdict.severity === 'medium'" type="warning" size="small">中等</el-tag>
+                <el-tag v-else type="success" size="small">通过</el-tag>
+              </div>
+            </template>
+            <div v-if="report.debate_verdict.issues?.length" class="issues-list">
+              <div v-for="(iss, i) in report.debate_verdict.issues" :key="i" class="issue-item">
+                <el-tag v-if="iss.fund_code" size="small" style="margin-right: 4px">{{ iss.fund_code }}</el-tag>
+                <span>{{ iss.finding }}</span>
+                <p v-if="iss.fix_suggestion" class="issue-fix">→ {{ iss.fix_suggestion }}</p>
+              </div>
+            </div>
+            <div v-if="report.debate_verdict.arbiter?.rationale" class="arbiter-rationale">
+              <strong>裁决:</strong> {{ report.debate_verdict.arbiter.rationale }}
+            </div>
+            <p v-if="!report.debate_verdict.issues?.length && !report.debate_verdict.arbiter?.rationale" class="empty-hint">
+              {{ report.debate_verdict.recommendation || '验证通过' }}
+            </p>
+          </el-card>
+
+          <!-- Ground Truth -->
+          <el-card v-if="report.ground_truth" shadow="hover" class="section-card ground-truth-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><Histogram /></el-icon>
+                <span>客观数据 (Ground Truth)</span>
+              </div>
+            </template>
+            <el-row :gutter="16" class="ground-truth-stats">
+              <el-col :span="6">
+                <div class="gt-stat-item">
+                  <label>总市值</label>
+                  <span class="gt-value">¥{{ report.ground_truth.total_market_value?.toFixed(0) }}</span>
+                </div>
+              </el-col>
+              <el-col :span="6">
+                <div class="gt-stat-item">
+                  <label>总盈亏</label>
+                  <span :class="['gt-value', report.ground_truth.total_pnl >= 0 ? 'positive' : 'negative']">
+                    {{ report.ground_truth.total_pnl >= 0 ? '+' : '' }}{{ report.ground_truth.total_pnl?.toFixed(2) }}
+                  </span>
+                </div>
+              </el-col>
+              <el-col :span="6">
+                <div class="gt-stat-item">
+                  <label>集中度(Top 3)</label>
+                  <span class="gt-value" :class="{ 'gt-warn': report.ground_truth.concentration_top3 > 60 }">
+                    {{ report.ground_truth.concentration_top3 }}%
+                  </span>
+                </div>
+              </el-col>
+              <el-col :span="6">
+                <div class="gt-stat-item">
+                  <label>{{ report.ground_truth.trend_state }}</label>
+                  <span class="gt-value" :class="{ positive: report.ground_truth.trend_return > 0, negative: report.ground_truth.trend_return < 0 }">
+                    {{ report.ground_truth.trend_return > 0 ? '+' : '' }}{{ report.ground_truth.trend_return?.toFixed(1) }}%
+                  </span>
+                </div>
+              </el-col>
+            </el-row>
+            <div v-if="report.ground_truth.per_fund_summary?.length" class="gt-fund-list">
+              <div v-for="f in report.ground_truth.per_fund_summary" :key="f.fund_code" class="gt-fund-row">
+                <strong>{{ f.fund_code }}</strong>
+                <span class="gt-fund-name">{{ f.fund_name }}</span>
+                <span class="gt-fund-data">占比 {{ f.mv_ratio }}% | 盈亏 {{ f.pnl_pct >= 0 ? '+' : '' }}{{ f.pnl_pct?.toFixed(2) }}% | 净值变动 {{ f.nav_change_pct >= 0 ? '+' : '' }}{{ f.nav_change_pct?.toFixed(2) }}%</span>
+              </div>
+            </div>
           </el-card>
 
           <!-- Footer -->
           <div class="report-footer">
             报告生成于 {{ report.generated_at }} | 模型: {{ report.model }}
+            <span v-if="report.analysis_duration_seconds"> | 耗时: {{ report.analysis_duration_seconds }}s</span>
           </div>
         </template>
       </el-col>
@@ -217,7 +299,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Promotion, List, Warning, DataAnalysis, Tickets } from '@element-plus/icons-vue'
+import { Promotion, List, Warning, DataAnalysis, Tickets, WarnTriangleFilled, CircleCheckFilled, Histogram } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
@@ -549,5 +631,98 @@ onMounted(async () => {
   color: #909399;
   font-size: 12px;
   padding: 16px 0 8px 0;
+}
+
+/* Ground Truth */
+.ground-truth-card {
+  background-color: #fafbfc;
+}
+
+.ground-truth-stats {
+  margin-bottom: 12px;
+}
+
+.gt-stat-item {
+  text-align: center;
+  padding: 8px 4px;
+}
+
+.gt-stat-item label {
+  display: block;
+  font-size: 11px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+
+.gt-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.gt-value.positive {
+  color: #e65d5d;
+}
+
+.gt-value.negative {
+  color: #67c23a;
+}
+
+.gt-value.gt-warn {
+  color: #e65d5d;
+}
+
+.gt-fund-list {
+  border-top: 1px solid #ebeef5;
+  padding-top: 8px;
+}
+
+.gt-fund-row {
+  padding: 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.gt-fund-row:last-child {
+  border-bottom: none;
+}
+
+.gt-fund-name {
+  color: #909399;
+  font-size: 12px;
+}
+
+.gt-fund-data {
+  color: #606266;
+  margin-left: auto;
+}
+
+/* Debate Verdict */
+.issues-list {
+  padding: 4px 0;
+}
+
+.issue-item {
+  padding: 6px 0;
+  font-size: 13px;
+  color: #606266;
+}
+
+.issue-fix {
+  margin: 2px 0 0 20px;
+  color: #409eff;
+  font-size: 12px;
+}
+
+.arbiter-rationale {
+  margin-top: 8px;
+  padding: 8px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #606266;
 }
 </style>
