@@ -308,6 +308,45 @@ DEBATE_PROMPT = """你是辩论综合裁判。你的任务是在四个独立分�
 ## 四位分析师的意见
 {analyst_opinions}
 
+## 操作建议决策表（必须严格参照，不可自行降低标准）
+
+### action.type 决策规则
+| 条件 | action | 说明 |
+|------|--------|------|
+| health≥80 且 Sharpe>1.0 且 trend=up | buy | 基本面/趋势/性价比三优，可新建或大幅增持 |
+| health≥65 且 trend=up 且 Sharpe>0.5 | hold | 趋势健康，风险调整收益可接受 |
+| health≥65 但 trend=down 或 MACD=death_cross_active | watch | 仓位不调但需密切监控，附触发条件 |
+| health 45-65 且 Sharpe<0.5 | reduce | 风险调整收益差，减仓10-20% |
+| health 45-65 且 当前回撤>历史最大回撤的60% | reduce | 回撤接近历史极值，减仓10-20% |
+| health<45 | reduce | 综合质量差，减仓20-30% |
+| health<30 或 回撤>-30% 或 Sharpe<-0.5 | sell | 极端恶化，清仓或大幅减仓 |
+
+### action.change_pct 仓位调整幅度
+| action | change_pct 范围 | 约束 |
+|--------|----------------|------|
+| buy | +15~25% | 新建仓或大幅增持 |
+| add (增持) | +5~15% | 在持有基础上加仓 |
+| hold | 0% | 不调整 |
+| watch | 0% | 不调整但设触发条件 |
+| reduce | -10~25% | 根据恶化程度递增 |
+| sell | -50~100% | 大幅减仓或清仓 |
+
+### action.trigger_conditions（必须提供，2-3 个可量化条件）
+格式: "指标名 阈值 → 执行操作"
+示例:
+- "MACD柱 < -0.005 → 转为 reduce"
+- "当前回撤 > -15% → 追加减仓5%"
+- "RSI < 30 且连续3日 → 触发紧急减仓"
+- "Sharpe 连续2月 < 0 → 转为 sell 候选"
+
+### health_score 计算引导（不要简单平均4个视角）
+- trend_score 权重 25%: 趋势是短期价格走向
+- risk_inverse 权重 30%: 风险是最重要维度 (1 - risk_score/100)
+- value_score 权重 25%: 性价比决定中期持有价值
+- tech_score 权重 20%: 技术面是短期辅助信号
+- 如果 Sharpe < 0，health_score 上限不超过 55（不管其他指标多好）
+- 如果当前回撤 > 历史最大回撤 80%，health_score 上限不超过 50
+
 ## 输出 JSON Schema
 ```json
 {{
@@ -334,7 +373,13 @@ DEBATE_PROMPT = """你是辩论综合裁判。你的任务是在四个独立分�
   "action": {{
     "type": "hold",
     "confidence": 0.70,
-    "reasoning": "趋势向好但性价比一般。建议维持当前仓位, 如MACD形成死叉再考虑减仓。"
+    "reasoning": "趋势向好但性价比一般。建议维持当前仓位。",
+    "change_pct": 0,
+    "trigger_conditions": [
+      "MACD柱 < -0.005 → 转为reduce，减仓10%",
+      "当前回撤 > -8% → 追加减仓5%"
+    ],
+    "target_ratio_pct": null
   }},
   "confidence": 0.72,
   "uncertainties": []
@@ -345,9 +390,12 @@ DEBATE_PROMPT = """你是辩论综合裁判。你的任务是在四个独立分�
 - contradictions: 显式列出所有视角间的矛盾, severity: minor/moderate/major
 - consensus_level: 0-1, 越高观点越一致
 - consensus_label: full_consensus(>0.85) / broad_agreement(0.65-0.85) / partial_disagreement(0.40-0.65) / sharp_disagreement(<0.40)
-- health_score: 0-100
+- health_score: 0-100, 遵循上述权重引导，且满足 Sharpe<0 时≤55 等硬上限
 - strengths/risks: 各3-5条, 每条都引用具体数据
-- action.type: buy/hold/sell/reduce/add
+- action.type: buy/hold/sell/reduce/add/watch (严格按上方决策表)
+- action.change_pct: 必须给出，遵循仓位调整幅度表
+- action.trigger_conditions: 必须给出 2-3 个可量化触发条件
+- action.target_ratio_pct: 若建议调仓则给出目标占比(百分比数字)，否则 null
 - 如果多位分析师方向冲突, 不要强行调和, 降低 confidence 和 consensus_level
 """
 

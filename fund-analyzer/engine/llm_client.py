@@ -423,15 +423,80 @@ def fallback_technical_diagnosis(qi) -> Dict[str, Any]:
 
 
 def fallback_debate(qi, trend, risk, value, technical) -> Dict[str, Any]:
+    """
+    Fallback debate with quantitative decision rules (RFC-006 方案B).
+
+    Ensures LLM-down still produces differentiated, actionable suggestions
+    instead of a blanket "hold" for every fund.
+    """
     scores = [
-        trend.get("overall_trend_score", 50),
-        risk.get("overall_risk_score", 50),
-        value.get("overall_value_score", 50),
-        technical.get("overall_tech_score", 50),
+        trend.get("overall_trend_score", 50) if isinstance(trend, dict) else 50,
+        risk.get("overall_risk_score", 50) if isinstance(risk, dict) else 50,
+        value.get("overall_value_score", 50) if isinstance(value, dict) else 50,
+        technical.get("overall_tech_score", 50) if isinstance(technical, dict) else 50,
     ]
-    # Normalize risk score (high risk = bad)
     risk_norm = 100 - scores[1]
     avg = int((scores[0] + risk_norm + scores[2] + scores[3]) / 4)
+
+    # Read key quantitative indicators (ground truth)
+    sharpe = qi.efficiency.sharpe_ratio if qi.efficiency and qi.efficiency.sharpe_ratio is not None else 0
+    sortino = qi.efficiency.sortino_ratio if qi.efficiency and qi.efficiency.sortino_ratio is not None else 0
+    current_dd = abs(qi.risk.current_drawdown_pct or 0) if qi.risk else 0
+    max_dd = abs(qi.risk.max_drawdown_pct or 0) if qi.risk else 0
+    vol = qi.risk.annual_volatility_pct or 0 if qi.risk else 0
+    macd_signal = qi.macd.signal or "unknown" if qi.macd else "unknown"
+    trend_dir = qi.trend.trend_direction or "unknown" if qi.trend else "unknown"
+
+    # --- Quantitative decision (RFC-006 decision matrix) ---
+    conditions = []
+    if avg < 30 or current_dd > 30 or sharpe < -0.5:
+        action_type = "sell"
+        change = -50 if current_dd > 30 else -30
+        reasoning = f"健康分{avg}+回撤{current_dd:.1f}%+Sharpe{sharpe:.2f}触发清仓线"
+        conditions.append("净值跌破MA60 → 全部清仓")
+    elif avg < 55 or sharpe < 0:
+        action_type = "reduce"
+        change = -20 if sharpe < 0 else -10
+        reasoning = f"Sharpe{sharpe:.2f}偏低，减仓{abs(change)}%控制风险"
+        conditions.append("MACD柱 < -0.005 → 追加减仓5%")
+        conditions.append(f"当前回撤 > -{max_dd * 0.6:.0f}% → 转为sell")
+    elif avg > 75 and sharpe > 1.0 and trend_dir == "up":
+        action_type = "add"
+        change = 10
+        reasoning = f"健康分{avg}+Sharpe{sharpe:.2f}三优信号，建议增持10%"
+        conditions.append("Sharpe连续2月>1.5 → 再增持5%")
+    elif macd_signal == "death_cross_active" or trend_dir == "down":
+        action_type = "watch"
+        change = 0
+        reasoning = "趋势走弱/MACD死叉，暂持但需监控"
+        conditions.append("MACD柱 > 0.005 且持续3日 → 转为hold")
+        conditions.append("RSI < 30 → 触发减仓10%")
+    else:
+        action_type = "hold"
+        change = 0
+        reasoning = "信号混合，维持当前仓位"
+        conditions.append("MACD柱 < -0.005 → 转为reduce")
+
+    # --- Quantitative strengths/risks ---
+    risks = []
+    if vol > 30:
+        risks.append(f"年化波动率{vol:.1f}%属于高风险水平")
+    if current_dd > 10:
+        risks.append(f"当前回撤{current_dd:.1f}%仍然显著")
+    if sharpe < 0.5:
+        risks.append(f"Sharpe {sharpe:.2f}低于1.0，风险调整收益不佳")
+    if macd_signal == "death_cross_active":
+        risks.append("MACD死亡交叉，动能减弱")
+
+    strengths = []
+    if sharpe > 1.0:
+        strengths.append(f"Sharpe {sharpe:.2f} > 1.0，风险调整收益优秀")
+    if sortino > 1.0:
+        strengths.append(f"Sortino {sortino:.2f} > 1.0，下行风险控制良好")
+    if trend_dir == "up":
+        strengths.append("趋势方向向上，均线系统支撑")
+    if max_dd > 0 and current_dd < max_dd * 0.5:
+        strengths.append(f"当前回撤{current_dd:.1f}%远低于历史最大{max_dd:.1f}%，风险已释放")
 
     return {
         "contradictions": [],
@@ -442,9 +507,55 @@ def fallback_debate(qi, trend, risk, value, technical) -> Dict[str, Any]:
             "良好" if avg >= 70 else "中等偏上" if avg >= 55 else
             "中等" if avg >= 40 else "中等偏下" if avg >= 25 else "较差"
         ),
-        "strengths": [],
-        "risks": [],
-        "action": {"type": "hold", "confidence": 0.5, "reasoning": "降级分析, 建议保守持有"},
+        "strengths": strengths,
+        "risks": risks,
+        "action": {
+            "type": action_type,
+            "confidence": 0.45,
+            "reasoning": reasoning,
+            "change_pct": change,
+            "trigger_conditions": conditions,
+            "target_ratio_pct": None,
+        },
         "confidence": 0.35,
-        "uncertainties": ["LLM调用失败, 使用降级分析"],
+        "uncertainties": ["LLM调用失败, 使用降级分析(含量化决策)"],
     }
+
+
+# ============================================================
+#  ACTION NORMALIZATION (RFC-006 方案A 后处理校验)
+# ============================================================
+
+def normalize_action(action) -> Dict[str, Any]:
+    """
+    Ensure an action (dict or absent) always contains the RFC-006 fields:
+    type / confidence / reasoning / change_pct / trigger_conditions / target_ratio_pct.
+
+    Acts as a safety net when the LLM omits the new fields, preserving
+    backward compatibility with old dict-based reports in the DB.
+    """
+    if isinstance(action, dict):
+        act = dict(action)
+    else:
+        act = {}
+
+    act.setdefault("type", "hold")
+    act.setdefault("confidence", 0.5)
+    act.setdefault("reasoning", "")
+    if "change_pct" not in act or act["change_pct"] is None:
+        act["change_pct"] = 0.0
+    act["trigger_conditions"] = act.get("trigger_conditions") or []
+    if "target_ratio_pct" not in act:
+        act["target_ratio_pct"] = None
+
+    # Sanity: change_pct sign must match action type
+    t = act["type"]
+    cp = float(act["change_pct"] or 0.0)
+    if t in ("buy", "add") and cp < 0:
+        act["change_pct"] = abs(cp)
+    elif t in ("reduce", "sell") and cp > 0:
+        act["change_pct"] = -abs(cp)
+    elif t in ("hold", "watch"):
+        act["change_pct"] = 0.0
+
+    return act

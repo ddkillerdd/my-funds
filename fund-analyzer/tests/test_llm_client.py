@@ -120,7 +120,50 @@ class TestFallbacks:
         )
         assert "health_score" in result
         assert "action" in result
-        assert result["action"]["type"] == "hold"
+        # RFC-006: action now carries quantitative decision fields
+        assert result["action"]["type"] in (
+            "buy", "add", "hold", "watch", "reduce", "sell"
+        )
+        assert "change_pct" in result["action"]
+        assert isinstance(result["action"]["change_pct"], (int, float))
+        assert "trigger_conditions" in result["action"]
+        assert isinstance(result["action"]["trigger_conditions"], list)
+        assert "target_ratio_pct" in result["action"]
+
+    def test_fallback_debate_differentiated(self):
+        """RFC-006: bad fund must not get 'hold' — must differentiate."""
+        from engine.models import QuantIndicators
+
+        def mk(sharpe, dd, max_dd, vol, macd_sig, trend_dir,
+               t_sc, r_sc, v_sc, tech_sc):
+            qi = QuantIndicators(
+                fund_code="x", fund_name="x", fund_type="",
+                current_mv=0, cost=0, mv_ratio=0, pnl_amount=0,
+                pnl_pct=0, is_money_fund=False, nav_history_days=250,
+            )
+            qi.efficiency.sharpe_ratio = sharpe
+            qi.risk.current_drawdown_pct = -dd
+            qi.risk.max_drawdown_pct = -max_dd
+            qi.risk.annual_volatility_pct = vol
+            qi.macd.signal = macd_sig
+            qi.trend.trend_direction = trend_dir
+            views = {
+                "overall_trend_score": t_sc,
+                "overall_risk_score": r_sc,
+                "overall_value_score": v_sc,
+                "overall_tech_score": tech_sc,
+            }
+            return fallback_debate(qi, views, views, views, views)["action"]
+
+        good = mk(1.76, 3.99, 15, 18, "golden_cross_active", "up",
+                  78, 40, 85, 80)
+        bad = mk(-0.33, 18.1, 40, 42, "death_cross_active", "down",
+                 30, 78, 25, 35)
+        # Good fund must not be reduced/sold; bad fund must not be held
+        assert good["type"] in ("hold", "add"), good
+        assert bad["type"] in ("reduce", "sell"), bad
+        assert good["change_pct"] >= 0
+        assert bad["change_pct"] < 0
 
 
 class TestLLMConfig:

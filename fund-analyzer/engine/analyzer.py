@@ -62,6 +62,7 @@ from .llm_client import (
     LLMClient,
     parse_json_response,
     validate_diagnosis_json,
+    normalize_action,
     fallback_trend_diagnosis,
     fallback_risk_diagnosis,
     fallback_value_diagnosis,
@@ -182,7 +183,7 @@ class Analyzer:
                     health_label="中性（货币基金）",
                     strengths=["几乎零风险", "流动性好"],
                     risks=["收益率低于通胀"],
-                    action={"type": "hold", "confidence": 0.9, "reasoning": "货币基金适合作为流动性储备"},
+                    action=normalize_action({"type": "hold", "confidence": 0.9, "reasoning": "货币基金适合作为流动性储备"}),
                     confidence=1.0,
                 ),
             )
@@ -231,7 +232,7 @@ class Analyzer:
                     contradictions=[], consensus_level=0.3, consensus_label="partial_disagreement",
                     health_score=40, health_label="无法评估",
                     strengths=[], risks=["数据严重不足"],
-                    action={"type": "hold", "confidence": 0.3, "reasoning": "数据不足，建议观望"},
+                    action=normalize_action({"type": "hold", "confidence": 0.3, "reasoning": "数据不足，建议观望"}),
                     confidence=0.2,
                     uncertainties=["净值历史不足20天"],
                 )
@@ -581,6 +582,7 @@ class Analyzer:
             data = parse_json_response(raw)
 
             if data:
+                raw_action = data.get("action") or {}
                 return DebateSummary(
                     contradictions=[
                         Contradiction(**c) for c in data.get("contradictions", [])
@@ -592,7 +594,7 @@ class Analyzer:
                     health_label=data.get("health_label", ""),
                     strengths=data.get("strengths", []),
                     risks=data.get("risks", []),
-                    action=data.get("action", {"type": "hold", "confidence": 0.5, "reasoning": ""}),
+                    action=normalize_action(raw_action),
                     confidence=data.get("confidence", 0.5),
                     uncertainties=data.get("uncertainties", []),
                     # v5: model-level reliability
@@ -614,7 +616,7 @@ class Analyzer:
                 health_label=data.get("health_label", ""),
                 strengths=data.get("strengths", []),
                 risks=data.get("risks", []),
-                action=data.get("action", {"type": "hold", "confidence": 0.5, "reasoning": ""}),
+                action=normalize_action(data.get("action") or {}),
                 confidence=data.get("confidence", 0.4),
                 uncertainties=data.get("uncertainties", []),
                 model_sources=model_sources,

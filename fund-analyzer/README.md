@@ -4,6 +4,12 @@
 
 FundAdvisor 的分析核心模块，完全独立的 Python 库。
 
+从「持仓分析器」升级为「持仓分析 + 荐基 + 择时」三位一体的投顾内核（见 `docs/RFC-009-recommendation-architecture.md` 总纲）：
+
+- **持仓分析**（已有，RFC-005 多模型辩论 + RFC-006 质量强化）
+- **荐基**（RFC-008 Fund Screener：筛「买什么」）
+- **择时**（RFC-007 Entry Timing：判「何时买」）
+
 **不依赖** FundAdvisor 的 Web 框架、数据库 ORM、API 路由。
 **只依赖** pandas + numpy + httpx（全部已有）。
 
@@ -98,10 +104,20 @@ fund-analyzer/
 
 ## 开发状态
 
-| 阶段 | 状态 |
-|------|------|
-| 设计文档 | ✅ 完成 (DESIGN.md) |
-| Phase 1: 量化计算 | ⬜ 待实现 |
-| Phase 2: LLM 基础设施 | ⬜ 待实现 |
-| Phase 3: 主流程 | ⬜ 待实现 |
-| Phase 4: 集成 | ⬜ 待实现 |
+| 模块 | 代码 | 文档 |
+|------|------|------|
+| 量化层 quant.py (32指标) | ✅ 已实现 | DESIGN.md |
+| 多模型辩论 RFC-005 | ✅ 已实现 | docs/RFC-005 |
+| 分析质量强化 RFC-006 | ⬜ 待落地 | docs/RFC-006 |
+| 入场时机 RFC-007 | ⬜ 待实现 | docs/RFC-007 |
+| 荐基引擎 RFC-008 | ⬜ 待实现 | docs/RFC-008 |
+| 重构总纲 RFC-009 | - | docs/RFC-009 |
+
+## 文档索引
+
+- `DESIGN.md` — 核心方法论 + 架构（多轮调研验证）
+- `docs/RFC-005-multi-model-debate.md` — 多模型辩论
+- `docs/RFC-006-analysis-quality.md` — 分析质量与操作建议强化
+- `docs/RFC-007-entry-timing-recommendation.md` — 入场时机推荐
+- `docs/RFC-008-fund-screener.md` — 荐基引擎
+- `docs/RFC-009-recommendation-architecture.md` — 重构总纲
