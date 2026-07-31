@@ -108,10 +108,13 @@ fund-analyzer/
 |------|------|------|
 | 量化层 quant.py (32指标) | ✅ 已实现 | DESIGN.md |
 | 多模型辩论 RFC-005 | ✅ 已实现 | docs/RFC-005 |
-| 分析质量强化 RFC-006 | ⬜ 待落地 | docs/RFC-006 |
-| 入场时机 RFC-007 | ⬜ 待实现 | docs/RFC-007 |
-| 荐基引擎 RFC-008 | ⬜ 待实现 | docs/RFC-008 |
-| 重构总纲 RFC-009 | - | docs/RFC-009 |
+| 分析质量强化 RFC-006 | ✅ 已实现 | docs/RFC-006 |
+| 入场时机 RFC-007 | ✅ 已实现 `engine/timing.py` | docs/RFC-007 |
+| 市场数据层 RFC-009 Phase C | ✅ 已实现 `engine/market_data.py` | docs/RFC-009 |
+| 荐基引擎 RFC-008 | ✅ 已实现 `engine/screener.py` + `screen_runner.py` | docs/RFC-008 |
+| 重构总纲 RFC-009 | ✅ 已落地 | docs/RFC-009 |
+
+测试：`pytest tests/` — 99 个用例全绿（含 timing 17 / screener 15 / market_data 9）。
 
 ## 文档索引
 

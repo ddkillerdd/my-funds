@@ -1,6 +1,6 @@
 # RFC-009: 荐基引擎 + 入场时机 — 基金分析能力重构总纲
 
-> **状态**: 提案
+> **状态**: ✅ 已落地 — Market Data Layer (`engine/market_data.py` + `engine/screen_runner.py`)
 > **日期**: 2026-07-31
 > **作者**: AAA
 > **前置**: RFC-005（多模型辩论）、RFC-006（分析质量强化）

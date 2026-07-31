@@ -1,6 +1,6 @@
 # RFC-008: 荐基引擎（Fund Screener）— 从「分析持仓」到「推荐标的」
 
-> **状态**: 提案
+> **状态**: ✅ 已实现 (`engine/screener.py` + `engine/screen_runner.py`)
 > **日期**: 2026-07-31
 > **作者**: AAA
 > **前置**: RFC-009（总纲）、RFC-007（择时）

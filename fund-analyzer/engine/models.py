@@ -153,6 +153,30 @@ class BenchmarkIndicators:
 
 
 @dataclass
+class PeerBenchmarkData:
+    """市场环境/同类对比 (RFC-006 方案D, RFC-009 Market Data Layer)
+
+    Supplies a market reference so "年化波动42%" has context (vs 大盘 18%).
+    Populated by engine/market_data.py before analysis; consumed by the
+    fact card and screening.
+    """
+    market_name: str = "沪深300"                 # reference index
+    market_annual_volatility: Optional[float] = None
+    market_return_6m: Optional[float] = None
+    market_current_drawdown: Optional[float] = None
+    market_return_1y: Optional[float] = None
+    # fund vs market
+    vol_ratio: Optional[float] = None            # fund_vol / market_vol
+    excess_6m: Optional[float] = None            # fund_6m - market_6m
+    # peer ranking (if candidate pool data available)
+    peer_sharpe_percentile: Optional[float] = None
+    peer_volatility_percentile: Optional[float] = None
+    peer_avg_sharpe: Optional[float] = None
+    peer_avg_volatility: Optional[float] = None
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass
 class QuantIndicators:
     """单只基金全部量化指标"""
     fund_code: str
@@ -174,6 +198,8 @@ class QuantIndicators:
     returns: ReturnIndicators = field(default_factory=ReturnIndicators)
     efficiency: EfficiencyIndicators = field(default_factory=EfficiencyIndicators)
     benchmark: Optional[BenchmarkIndicators] = None
+    # RFC-006 D: 市场环境/同类对比（由 Market Data Layer 填充）
+    peer_benchmark: Optional[PeerBenchmarkData] = None
 
     # 汇总
     all_notes: List[str] = field(default_factory=list)

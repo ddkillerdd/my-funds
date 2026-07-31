@@ -109,6 +109,27 @@ class Analyzer:
 
         report.data_duration_seconds = round(time.time() - quant_start, 2)
 
+        # RFC-006 方案D / RFC-009 Phase C: 市场基准对比
+        # Populate qi.peer_benchmark for each active fund when an index series
+        # is available, so the fact card can frame risk/return vs the大盘.
+        if portfolio.benchmark_nav_history:
+            benchmark_points = [
+                (getattr(p, "date", "") or "", float(p.nav))
+                for p in portfolio.benchmark_nav_history if p.nav is not None
+            ]
+            _benchmarked = 0
+            for qi in per_fund_qi:
+                try:
+                    from .market_data import compute_peer_benchmark
+                    pb = compute_peer_benchmark(qi, benchmark_points)
+                    if pb is not None:
+                        _benchmarked += 1
+                except Exception as e:
+                    logger.debug("peer_benchmark skipped for %s: %s",
+                                 qi.fund_code, e)
+            if _benchmarked:
+                logger.info("peer_benchmark populated for %d funds", _benchmarked)
+
         # Build portfolio ground truth
         report.ground_truth = PortfolioGroundTruth(
             **ground,
