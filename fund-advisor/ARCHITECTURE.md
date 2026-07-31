@@ -61,7 +61,103 @@ fund-advisor/  (Web 服务)
 
 ---
 
-## 三、数据流（核心：每日分析链路）
+## 三、模块关联（★分析与荐基如何与整体耦合）
+
+### 3.1 依赖关系总览
+
+两条业务管线（**分析**、**荐基**） + 一个**择时**能力，
+都建立在同一套**量化底层**之上。谁都不孤立，共享根基：
+
+```
+                ┌─────────────────────────────────────────────┐
+                │           fund-analyzer (决策引擎库)          │
+                │                                             │
+                │   【共享根基】 models.py ──── quant.py        │
+                │   (数据模型定义)      └── portfolio_quant.py  │
+                │           Pydantic/Dataclass  32指标+组合指标   │
+                ├─────────────────────────────────────────────┤
+                │                                             │
+  分析管线        │    analyzer.py ──┬─ llm_client.py            │
+  ✓✓✓✓✓         │                  └─ (多视角→辩论→总评)        │
+                │                                             │
+  荐基管线        │    screener.py ◄── screen_runner.py         │
+  ✓✓✓✓✓         │                   └──┐   └─ market_data.py   │
+                │                       └ 端到端编排(分批+排序)    │
+                │                                             │
+  择时能力        │    timing.py ──(独立调用 quant 因子)          │
+  ✓✓✓           │                                             │
+                └──────────────┬──────────────────────────────┘
+                               │ sys.path 源码引用
+                               ▼
+                ┌─────────────────────────────────────────────┐
+                │        fund-advisor (Web 服务)               │
+                │  advisor_service   → 调 analyzer (分析)      │
+                │  recommend_service → 调 timing + screen_runner│
+                │  nav_fetcher       → 东财数据源(唯一)          │
+                └─────────────────────────────────────────────┘
+```
+
+### 3.2 数据契约（模块间传递什么）
+
+所有模块通过 **`QuantIndicators`** 这个统一数据对象交互，这是耦合的"接口契约"：
+
+| 字段 | 含义 | 由谁算 | 被谁消费 |
+|------|------|--------|----------|
+| `efficiency.sharpe_ratio` | 风险调整收益 | quant.py | 分析(debate)/择时/荐基 |
+| `risk.current_drawdown_pct` | 当前回撤 | quant.py | 分析/择时/决策矩阵 |
+| `risk.max_drawdown_pct` | 最大回撤 | quant.py | 决策矩阵(豁免判断) |
+| `trend.trend_direction` | 趋势方向 | quant.py | 分析/择时 |
+| `macd.signal` | MACD 信号 | quant.py | 分析/择时/决策矩阵 |
+| `nav_history` | 净值序列 | 东财/nav_fetcher | 所有模块的输入源 |
+
+> **核心**: 分析、择时、荐基**共用 quant.py 的 `compute_all()`** 产出指标，
+> 只是从不同角度消费这些指标。所以三者的量化判断天然一致（同源）。
+
+### 3.3 调用链（一次荐基请求全流程）
+
+**荐基 screen**（`POST /recommend/screen`）：
+```
+前端 RecommendView
+  → 后端 recommend_service.screen_candidates()
+    → engine.screen_runner (端到端编排)
+        → engine.market_data   抓取候选基金净值+规模+估值
+        → engine.quant.compute_all  算 32 指标
+        → engine.screener.screen   六因子打分+风格归因+冗余惩罚
+        → 输出 [FundScore] → 回前端排序展示
+```
+
+**择时 timing**（`POST /recommend/timing`）：
+```
+前端 → recommend_service.get_timing()
+  → engine.screen_runner.fetch_fund_nav_full  (复用荐基的抓取)
+  → engine.quant.compute_all
+  → engine.timing.compute_entry_recommendation (五因子+risk_gate+dca)
+  → 输出 买/卖/观/避 + 置信度
+```
+
+**分析 analyze**（每日 cron / 手动）：
+```
+cron/手动 → advisor_service._analyze_v3
+  → engine.analyzer (逐基金)
+      → engine.quant.compute_all   (同样指标)
+      → engine.llm_client 每视角解读 → 辩论 → fallback_debate
+  → 组合层 portfolio_quant + 总评
+  → 写 advisor_report + 邮件推送
+```
+
+### 3.4 关键：三个模块为什么"同源同判"
+
+- 都吃**同一份量化指标**（quant.compute_all 的输出）
+- 都受 **`fallback_debate` 决策矩阵**约束（LLM 失效时的最后裁判）
+- 数据源唯一（东财经 nav_fetcher/market_data），无多源打架
+
+所以：**荐基筛出的好基金，择时也会判"能买"，分析也会给高分**——
+三者天然对齐，不会出现"荐基推荐但分析看空"的自相矛盾。
+这正是四位一体架构的价值。
+
+---
+
+## 四、数据流（核心：每日分析链路）
 
 ```
 [东财 API] 唯一数据源
@@ -83,7 +179,7 @@ fund-advisor/  (Web 服务)
 
 ---
 
-## 四、LLM 模型链路（经 NewAPI 中转）
+## 五、LLM 模型链路（经 NewAPI 中转）
 
 | 角色 | 模型 | 稳定性实测 | 用途 |
 |------|------|-----------|------|
@@ -101,7 +197,7 @@ fund-advisor/  (Web 服务)
 
 ---
 
-## 五、量化决策矩阵（防幻觉核心）
+## 六、量化决策矩阵（防幻觉核心）
 
 ### `fallback_debate`（LLM 辩论失败时的量化兜底，v6.0.2b 优化后）
 ```
@@ -120,7 +216,7 @@ MACD死叉 或 趋势向下                              → WATCH 观望(触发
 
 ---
 
-## 六、荐基（Screener）设计
+## 七、荐基（Screener）设计
 
 - **六因子打分** + 权重重归一化
 - **风格归因**: 通过指数相关性判断基金风格（消费/科技/宽基...）
@@ -130,7 +226,7 @@ MACD死叉 或 趋势向下                              → WATCH 观望(触发
 
 ---
 
-## 七、API 端点（决策类）
+## 八、API 端点（决策类）
 
 | 端点 | 功能 |
 |------|------|
@@ -144,7 +240,7 @@ MACD死叉 或 趋势向下                              → WATCH 观望(触发
 
 ---
 
-## 八、每日邮件幂等锁（v6.0.1 修复重复邮件）
+## 九、每日邮件幂等锁（v6.0.1 修复重复邮件）
 
 **根因**: cron `timeoutSeconds=180` << 分析耗时 ~30min → curl 被超时 → cron 重试 → 4并发 → 4封邮件
 
@@ -156,7 +252,7 @@ MACD死叉 或 趋势向下                              → WATCH 观望(触发
 
 ---
 
-## 九、运维要点
+## 十、运维要点
 
 ### 服务
 | 服务 | systemd | 端口 | 状态 |
@@ -183,7 +279,7 @@ fund-advisor 通过 `sys.path` 引用 fund-analyzer/engine，**改引擎源码�
 
 ---
 
-## 十、近期版本记录
+## 十一、近期版本记录
 
 | 版本 | commit | 内容 |
 |------|--------|------|
@@ -195,7 +291,7 @@ fund-advisor 通过 `sys.path` 引用 fund-analyzer/engine，**改引擎源码�
 
 ---
 
-## 十一、已知限制
+## 十二、已知限制
 
 1. **NIM 上游不稳定**: 时好时坏，45s 上下剧烈波动，随机让不同环节撞拥堵
    （曾导致 id=20 组合总评缺失）。当前靠 45s 超时 + fallback 链 + 幂等兜底缓解。
