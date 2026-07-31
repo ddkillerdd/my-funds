@@ -44,3 +44,32 @@
 | 日志含省略号 U+2026 | 改 ASCII |
 | import re 在循环内 | 移到文件顶部 |
 | GET /report (latest) 没补全 fund_name | 提取 _patch_report_actions 公共函数 |
+
+### v6.0 — RFC-010 荐基 + 择时 部署上线 ✅ 完成 (2026-07-31)
+
+#### 代码改动 (后端 + 前端)
+
+| 文件 | 改动 |
+|------|------|
+| `backend/schemas/advisor_recommend.py` | 新增：TimingRequest/Response、ScreenRequest/Response、CandidateIn、RecommendationOut/FactorScoreOut |
+| `backend/services/recommend_service.py` | 新增桥接：get_timing()（调 engine/timing）、run_screen()（调 engine/screen_runner）；复用 NavService 取持仓 NAV 作分散化参照 |
+| `backend/api/recommend.py` | 新增 2 端点：POST /api/advisor/recommend/timing、POST /api/advisor/recommend/screen |
+| `backend/api/router.py` | 注册 recommend router（prefix=/api/advisor/recommend） |
+| `frontend/src/views/RecommendView.vue` | 新增「荐基 & 择时」双 Tab 视图（择时因子进度条 + 荐基排序表） |
+| `frontend/src/router/index.js` / `App.vue` | 注册 /recommend 路由 + 侧边栏菜单项 |
+| `frontend/src/api/index.js` | 新增 getFundTiming / screenFunds |
+
+#### 能力
+- **择时**（纯量化，无 LLM）：技术/趋势/回撤/估值 4 因子 + 硬风险门 + 定投建议
+- **荐基**（六因子）：动量/质量/回撤/分散/规模/估值 → 排序 + 风格归因 + 建议配比；可选 LLM 后置一句解读（只解读不评分）
+
+#### 验收（真实线上 HTTP 验证）
+- timing 161725 → **avoid**（RSI=73 超买 + 偏离MA20 9.4% + 回撤64.5%，风险门拦截）✅
+- screen [161725/110022/005827] → 消费35.4 / 蓝筹31.0 / 白酒23.8，风格归因创业板指/上证50 ✅
+- 无效代码 999999 → 优雅降级 nav_data_insufficient ✅
+- 空候选 → no_candidates ✅
+- 前端 vite dev 热更已生效；后端 systemd 已重启（fund-advisor-backend.service active）
+
+#### 遗留
+- 荐基 with_ai_explanation 默认关（避免 ds-flash 高峰 529 拖慢）；前端已提供开关
+- 内存约束：荐基候选 ≤10 只，逐个处理，峰值 <200MB

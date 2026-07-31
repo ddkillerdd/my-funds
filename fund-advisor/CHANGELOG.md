@@ -2,6 +2,18 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [6.0.0] - 2026-07-31 — 荐基 + 择时 上线（RFC-010）
+
+### Added
+- **入场择时** `POST /api/advisor/recommend/timing` — 纯量化（技术/趋势/回撤/估值 4 因子 + 硬风险门 + 定投建议），无 LLM
+- **荐基打分** `POST /api/advisor/recommend/screen` — 六因子（动量/质量/回撤/分散/规模/估值）排序 + 风格归因 + 建议配比；可选 LLM 后置解读（只解读不评分）
+- **前端**「荐基 & 择时」视图 `/recommend`（`RecommendView.vue`）+ 侧边栏入口
+- 桥接 `backend/services/recommend_service.py` 复用 `NavService` 持仓 NAV 作分散化参照
+
+### Notes
+- 荐基候选 ≤10 只，逐个处理，内存峰值 <200MB（3.6G 服务器现实）
+- AI 解读默认关闭，避免 ds-flash 高峰 529 拖慢评分主链路
+
 ## [3.0.0] - 2026-07-30 — FundAnalyzer 独立引擎 + 集成上线
 
 ### Added

@@ -156,4 +156,14 @@ export function simpleImport(records) {
   return api.post('/holdings/simple-import', { records })
 }
 
+// ---- Recommendation (RFC-010: 择时 + 荐基) ----
+
+export function getFundTiming(payload) {
+  return api.post('/advisor/recommend/timing', payload)
+}
+
+export function screenFunds(payload) {
+  return api.post('/advisor/recommend/screen', payload)
+}
+
 export default api
