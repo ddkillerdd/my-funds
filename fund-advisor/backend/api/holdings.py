@@ -1,0 +1,90 @@
+"""Holdings API endpoints."""
+
+from fastapi import APIRouter, Depends, Query, HTTPException
+from sqlalchemy.orm import Session
+from typing import Optional
+
+from backend.database import get_db
+from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse, SimpleImportRequest, SimpleImportResult
+
+router = APIRouter()
+
+
+@router.get("", response_model=list[HoldingResponse])
+def get_holdings(
+    platform: Optional[str] = Query(None, description="Filter by platform"),
+    search: Optional[str] = Query(None, description="Search by fund code or name"),
+    sort_by: str = Query("market_value", description="Sort field"),
+    sort_order: str = Query("desc", description="asc or desc"),
+    db: Session = Depends(get_db),
+):
+    """Get all active holdings with optional filters."""
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).get_holdings(
+        platform=platform, search=search, sort_by=sort_by, sort_order=sort_order
+    )
+
+
+@router.get("/by-platform", response_model=list[HoldingsByPlatformResponse])
+def get_holdings_by_platform(db: Session = Depends(get_db)):
+    """Get holdings grouped by platform."""
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).get_holdings_by_platform()
+
+
+@router.get("/platforms", response_model=list[str])
+def get_platforms(db: Session = Depends(get_db)):
+    """Get all distinct platform names."""
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).get_platforms()
+
+
+@router.patch("/{holding_id}", response_model=HoldingResponse)
+def update_holding_cost(
+    holding_id: int,
+    body: HoldingCostUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update cost_nav for a holding."""
+    from backend.services.holding_service import HoldingService
+    try:
+        return HoldingService(db).update_cost(holding_id, body.cost_nav)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("", response_model=HoldingResponse, status_code=201)
+def create_holding(
+    body: HoldingCreate,
+    db: Session = Depends(get_db),
+):
+    """Create a new manual holding entry."""
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).create_holding(body)
+
+
+@router.delete("/{holding_id}", response_model=HoldingDeleteResponse)
+def delete_holding(
+    holding_id: int,
+    db: Session = Depends(get_db),
+):
+    """Soft delete (set status=0) a holding."""
+    from backend.services.holding_service import HoldingService
+    try:
+        return HoldingService(db).delete_holding(holding_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/simple-import", response_model=SimpleImportResult)
+def simple_import(
+    body: SimpleImportRequest,
+    db: Session = Depends(get_db),
+):
+    """Quick import: fund_code + market_value only.
+
+    Auto-resolves fund name, looks up latest NAV,
+    and calculates shares automatically.
+    """
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).simple_import(body.records)
