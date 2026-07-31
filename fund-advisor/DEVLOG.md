@@ -73,3 +73,23 @@
 #### 遗留
 - 荐基 with_ai_explanation 默认关（避免 ds-flash 高峰 529 拖慢）；前端已提供开关
 - 内存约束：荐基候选 ≤10 只，逐个处理，峰值 <200MB
+
+### v6.0.1 — 修复：每日重复邮件 (2026-07-31)
+
+#### 问题
+今早(07-31)收到 3~4 封一模一样的分析邮件。根因：
+- 主因：OpenClaw cron「FundAdvisor daily analysis push」`timeoutSeconds=180`，但 AdvisorJob 分析要 ~30min（27+次LLM调用+fallback）。curl在180s被judge超时 → cron重试 → curl重复执行 → 累计起 4 个并发 AdvisorJob → 4 封同样邮件（同一份净值和持仓，内容雷同）。
+- 无幂等保护：`run-advisor` 端点对每个请求都无条件「分析+发邮件」。
+
+#### 修复（A+B）
+- **A 每日幂等锁**：新增 `backend/models/email_send_record.py`（表 `email_send_record`，`report_date` 唯一约束）。`AdvisorJob.run()` 发邮件成功后 `_mark_sent()` 落库；下次同一天再跑会 `skipped=True` 直接跳过，不重复分析不发邮件。并发竞争由 DB 唯一约束兜底。新增 `force` 查询参数可绕锁强制重发。
+- **B 调 cron 超时**：`timeoutSeconds 180 → 2400`（40min 覆盖分析时长），不再误判超时触发重试。cron message 注明幂等锁已生效。
+
+#### 验证
+- 单测（mock LLM+Mail）：第1次发(1次) / 第2次 skipped(仍1次) / force=True 再发(2次) ✅
+- `email_send_record` 表 create_all 自动建表成功 ✅
+- OpenAPI 确认 `/api/scheduler/run-advisor` 参数 `[push_email, model, force]` ✅
+- backend systemd 重启生效（中间等分析跑完自然优雅停机，未强杀）
+
+#### 遗留
+- AdvisorJob 全量分析 ~30min，cron 40min 超时已覆盖；若未来模型更慢需再调

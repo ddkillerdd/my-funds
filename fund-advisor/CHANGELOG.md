@@ -2,6 +2,15 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [6.0.1] - 2026-07-31 — 修复每日重复邮件
+
+### Fixed
+- **每日邮件幂等锁**：新增 `email_send_record` 表（`report_date` 唯一），`AdvisorJob` 每天只发一封分析邮件，重复触发直接跳过；`force=true` 可强制重发
+- **cron 超时误判**：`FundAdvisor daily analysis push` timeout 180s→2400s，避免 30min 分析被误判超时导致 cron 重试发多封
+
+### Notes
+- 根因：cron 180s 超时 < 分析 30min → curl 被重试 → 4 个并发 AdvisorJob → 4 封同样邮件
+
 ## [6.0.0] - 2026-07-31 — 荐基 + 择时 上线（RFC-010）
 
 ### Added
