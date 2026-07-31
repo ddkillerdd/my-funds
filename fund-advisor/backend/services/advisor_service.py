@@ -96,8 +96,8 @@ class AdvisorService:
                 "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
                 "deepseek-ai/deepseek-v4-flash",
             ],
-            default_timeout=35.0,
-            fallback_timeout=45.0,
+            default_timeout=45.0,
+            fallback_timeout=60.0,
             model_assignments={
                 "trend": "nvidia/nvidia-nemotron-nano-9b-v2",
                 "risk": "nvidia/nvidia-nemotron-nano-9b-v2",
