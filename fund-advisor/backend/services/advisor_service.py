@@ -79,20 +79,32 @@ class AdvisorService:
             return {"error": "no_holdings", "message": "没有持仓数据"}
 
         # 2. 创建 Analyzer 并执行（RFC-005 多模型分发策略）
+        #
+        # 模型稳定性实测 (2026-07-31 分析):
+        #   nano-9b        成功7  超时0    (0% 超时)  ← 最稳, 作主力
+        #   nemotron-30b   成功11 超时12   (52% 超时)
+        #   ds-flash       成功0  超时16   (100% 超时) ← 完全不可用
+        #
+        # 优化: 全面切到 nano-9b 为主工作马(价值/辩论不再首选 ds-flash),
+        #        nemotron-30b 作为可选深度模型但快速降级到 nano-9b,
+        #        ds-flash 从首选移除, 仅作最后兜底。超时缩短到 35s 快速失败。
         config = LLMConfig(
             api_base=self.settings.NEWAPI_BASE_URL,
             api_key=self.settings.NEWAPI_API_KEY,
             primary_model="nvidia/nvidia-nemotron-nano-9b-v2",
-            fallback_models=["deepseek-ai/deepseek-v4-flash"],
-            default_timeout=60.0,
-            fallback_timeout=90.0,
+            fallback_models=[
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                "deepseek-ai/deepseek-v4-flash",
+            ],
+            default_timeout=35.0,
+            fallback_timeout=45.0,
             model_assignments={
-                "trend": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "risk": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "value": "deepseek-ai/deepseek-v4-flash",
+                "trend": "nvidia/nvidia-nemotron-nano-9b-v2",
+                "risk": "nvidia/nvidia-nemotron-nano-9b-v2",
+                "value": "nvidia/nvidia-nemotron-nano-9b-v2",
                 "tech": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "debate": "deepseek-ai/deepseek-v4-flash",
-                "portfolio": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                "debate": "nvidia/nvidia-nemotron-nano-9b-v2",
+                "portfolio": "nvidia/nvidia-nemotron-nano-9b-v2",
                 "cross_val": "nvidia/nvidia-nemotron-nano-9b-v2",
             },
         )

@@ -93,3 +93,31 @@
 
 #### 遗留
 - AdvisorJob 全量分析 ~30min，cron 40min 超时已覆盖；若未来模型更慢需再调
+
+### v6.0.2 — 优化：分析提速 + 规避不稳定模型 (2026-07-31)
+
+#### 问题背景
+监控一次全量分析（17:20-17:59, 40min）发现超时灾难：
+- ds-flash 100% 超时 (0成功/16超时) — 完全不可用
+- nemotron-30b 52% 超时 (11成功/12超时)
+- nano-9b 0% 超时 (7成功/0超时) — 唯一稳定模型
+- 4 只基金 debate 全模型失败 → 量化兜底，质量降级
+
+根因: model_assignments 里 value/debate 首选 ds-flash（最强推理本意），
+但 ds-flash 每次都先白等 60s×2 重试才 fallback，拖慢整体 + 大部分观点缺失。
+
+#### 修复 (advisor_service.py _analyze_v3 配置)
+- 所有视角(趋势/风险/价值/技术/辩论/组合/交叉验证)首选 → nano-9b（0超时主力）
+- default_timeout 60→35s / fallback_timeout 90→45s (快速失败, 不白等)
+- ds-flash 从首选移除, nemotron-30b + ds-flash 降为 fallback_models 最后兜底
+- 备份: /tmp/advisor_service.py.bak
+
+#### 预期效果
+- 超时等待从 33次×~60s 降到接近 0 (nano-9b 0超时)
+- 全量分析 40min → ~20min 以内
+- value/debate/portfolio 不再因 ds-flash 超时缺失, 辩论质量恢复
+
+#### 验证
+- 语法/配置断言通过 (所有角色均 nano-9b, ds-flash 无首选)
+- backend systemd 重启生效 (PID 3614674)
+- 完整全量分析验证待下次触发时观察
