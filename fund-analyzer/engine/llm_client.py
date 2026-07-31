@@ -448,24 +448,42 @@ def fallback_debate(qi, trend, risk, value, technical) -> Dict[str, Any]:
     trend_dir = qi.trend.trend_direction or "unknown" if qi.trend else "unknown"
 
     # --- Quantitative decision (RFC-006 decision matrix) ---
+    # 风险三要素：回撤是否已释放 / 趋势方向 / Sharpe 是否极端负值
+    dd_released = max_dd > 0 and current_dd < max_dd * 0.5  # 回撤已大幅释放
+    trend_up = trend_dir == "up"
+    trend_down = trend_dir == "down"
+    sharp_drop = sharpe < -0.5  # 极端负收益
+    overbought_risk = vol > 60  # 极端高波动(如单日涨跌幅大)时谨慎加仓
+
     conditions = []
-    if avg < 30 or current_dd > 30 or sharpe < -0.5:
+    if avg < 30 or current_dd > 30 or sharp_drop:
         action_type = "sell"
         change = -50 if current_dd > 30 else -30
         reasoning = f"健康分{avg}+回撤{current_dd:.1f}%+Sharpe{sharpe:.2f}触发清仓线"
         conditions.append("净值跌破MA60 → 全部清仓")
     elif avg < 55 or sharpe < 0:
-        action_type = "reduce"
-        change = -20 if sharpe < 0 else -10
-        reasoning = f"Sharpe{sharpe:.2f}偏低，减仓{abs(change)}%控制风险"
-        conditions.append("MACD柱 < -0.005 → 追加减仓5%")
-        conditions.append(f"当前回撤 > -{max_dd * 0.6:.0f}% → 转为sell")
-    elif avg > 75 and sharpe > 1.0 and trend_dir == "up":
+        # 默认减仓，但若“风险已释放 + 趋势向好”且仅Sharpe略低，不误砍 → hold
+        if dd_released and (trend_up or macd_signal == "golden_cross_active"):
+            action_type = "hold"
+            change = 0
+            reasoning = (f"回撤已释放({current_dd:.1f}%)+趋势向好，Sharpe{sharpe:.2f}略低但风险可控，"
+                         f"建议持有而非减仓")
+            conditions.append("MACD柱 < -0.005 → 转为reduce")
+            conditions.append("Sharpe连续2月<0 且趋势转down → 再评估减仓")
+        else:
+            action_type = "reduce"
+            change = -20 if sharpe < 0 else -10
+            reasoning = f"Sharpe{sharpe:.2f}偏低，减仓{abs(change)}%控制风险"
+            conditions.append("MACD柱 < -0.005 → 追加减仓5%")
+            conditions.append(f"当前回撤 > -{max_dd * 0.6:.0f}% → 转为sell")
+    elif avg > 75 and sharpe > 1.0 and trend_up:
         action_type = "add"
-        change = 10
-        reasoning = f"健康分{avg}+Sharpe{sharpe:.2f}三优信号，建议增持10%"
+        change = 10 if not overbought_risk else 0
+        reasoning = (f"健康分{avg}+Sharpe{sharpe:.2f}三优信号，建议增持10%"
+                     if not overbought_risk else
+                     f"健康分{avg}+Sharpe{sharpe:.2f}良好但波动率{vol:.0f}%偏高，暂观望")
         conditions.append("Sharpe连续2月>1.5 → 再增持5%")
-    elif macd_signal == "death_cross_active" or trend_dir == "down":
+    elif macd_signal == "death_cross_active" or trend_down:
         action_type = "watch"
         change = 0
         reasoning = "趋势走弱/MACD死叉，暂持但需监控"

@@ -165,6 +165,57 @@ class TestFallbacks:
         assert good["change_pct"] >= 0
         assert bad["change_pct"] < 0
 
+    def test_fallback_debate_recovered_trending_hold(self):
+        """Sharpe略低但回撤已释放+趋势向上 → 不应误减仓, 应hold (RFC-006b)."""
+        from engine.models import QuantIndicators
+
+        qi = QuantIndicators(
+            fund_code="x", fund_name="x", fund_type="",
+            current_mv=0, cost=0, mv_ratio=0, pnl_amount=0, pnl_pct=0,
+            is_money_fund=False, nav_history_days=250,
+        )
+        # Sharpe=0.2 (<0? 否, >0但<1) / avg~55 / 回撤已释放 / 趋势向上
+        # → 旧逻辑: avg<55 or sharpe<0 不中(0.2>0), 但avg可能<55 → 进reduce
+        # → 新逻辑: dd_released + trend_up → hold
+        qi.efficiency.sharpe_ratio = 0.2
+        qi.risk.current_drawdown_pct = -5.0   # 已从深坑回升
+        qi.risk.max_drawdown_pct = -30.0      # 历史最大回撤
+        qi.risk.annual_volatility_pct = 22.0
+        qi.macd.signal = "golden_cross_active"
+        qi.trend.trend_direction = "up"
+        views = {"overall_trend_score": 58, "overall_risk_score": 55,
+                 "overall_value_score": 52, "overall_tech_score": 60}
+        act = fallback_debate(qi, views, views, views, views)["action"]
+        assert act["type"] == "hold", f"回撤释放+趋势向好不应误减仓: {act}"
+        assert act["change_pct"] == 0
+
+    def test_fallback_debate_still_reduce_when_dd_not_released_or_down(self):
+        """豁免条件不满足时仍应减仓: 回撤未释放 或 趋势向下."""
+        from engine.models import QuantIndicators
+
+        def mk(dd, max_dd, trend):
+            qi = QuantIndicators(
+                fund_code="x", fund_name="x", fund_type="",
+                current_mv=0, cost=0, mv_ratio=0, pnl_amount=0, pnl_pct=0,
+                is_money_fund=False, nav_history_days=250,
+            )
+            qi.efficiency.sharpe_ratio = 0.1
+            qi.risk.current_drawdown_pct = -dd
+            qi.risk.max_drawdown_pct = -max_dd
+            qi.risk.annual_volatility_pct = 25.0
+            qi.macd.signal = "neutral"
+            qi.trend.trend_direction = trend
+            views = {"overall_trend_score": 45, "overall_risk_score": 50,
+                     "overall_value_score": 48, "overall_tech_score": 45}
+            return fallback_debate(qi, views, views, views, views)["action"]
+
+        # 回撤未释放 (5/8 未过半) + 中性趋势 → 应减仓
+        not_released = mk(5.0, 8.0, "sideways")
+        assert not_released["type"] in ("reduce", "sell"), not_released
+        # 回撤已释放但趋势向下 → 不应豁免, 应减仓/watch
+        released_but_down = mk(3.0, 30.0, "down")
+        assert released_but_down["type"] in ("reduce", "watch"), released_but_down
+
 
 class TestLLMConfig:
     def test_default_config(self):
