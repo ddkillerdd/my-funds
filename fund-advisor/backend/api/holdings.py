@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from backend.database import get_db
-from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse, SimpleImportRequest, SimpleImportResult
+from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse, SimpleImportRequest, SimpleImportResult, HoldingChangeRequest, HoldingChangeResponse
 
 router = APIRouter()
 
@@ -74,6 +74,24 @@ def delete_holding(
         return HoldingService(db).delete_holding(holding_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{holding_id}/change", response_model=HoldingChangeResponse)
+def change_holding(
+    holding_id: int,
+    body: HoldingChangeRequest,
+    db: Session = Depends(get_db),
+):
+    """RFC-011: Record an add/increase or reduce/decrease by RMB amount.
+
+    Writes a holding_changes record and updates the live holding,
+    so the next analysis reflects the true portfolio.
+    """
+    from backend.services.holding_service import HoldingService
+    try:
+        return HoldingService(db).record_change(holding_id, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/simple-import", response_model=SimpleImportResult)

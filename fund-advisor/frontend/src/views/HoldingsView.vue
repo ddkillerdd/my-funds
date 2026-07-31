@@ -109,8 +109,16 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90" align="center">
+        <el-table-column label="操作" width="180" align="center">
           <template #default="{ row }">
+            <el-button
+              text type="success" size="small"
+              @click.stop="openChangeDialog(row, 'increase')"
+            >加仓</el-button>
+            <el-button
+              text type="warning" size="small"
+              @click.stop="openChangeDialog(row, 'decrease')"
+            >减仓</el-button>
             <el-popconfirm
               title="确定删除这笔持仓？"
               confirm-button-text="删除"
@@ -277,6 +285,53 @@
         <el-button type="primary" :loading="createSaving" @click="submitCreate">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- Change Holding Dialog (RFC-011) -->
+    <el-dialog
+      v-model="changeDialogVisible"
+      :title="changeType === 'increase' ? '加仓' : '减仓'"
+      width="420px"
+    >
+      <el-form label-width="110px">
+        <el-form-item label="基金">
+          <span>{{ changeTarget?.fund_name }}</span>
+        </el-form-item>
+        <el-form-item label="当前份额">
+          <span>{{ changeTarget?.shares }}</span>
+        </el-form-item>
+        <el-form-item :label="changeType === 'increase' ? '加仓金额(元)' : '卖出金额(元)'" required>
+          <el-input-number
+            v-model="changeAmount"
+            :min="0.01"
+            :precision="2"
+            :step="10"
+            controls-position="right"
+            style="width: 100%"
+            placeholder="输入人民币金额，如 10"
+          />
+        </el-form-item>
+        <el-form-item label="买入单价" v-if="changeType === 'increase'">
+          <el-input-number
+            v-model="changeNavInput"
+            :min="0"
+            :precision="4"
+            :controls="false"
+            style="width: 100%"
+            placeholder="留空则用最新净值"
+          />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="changeNote" placeholder="可选" />
+        </el-form-item>
+        <el-form-item v-if="changePreview">
+          <el-alert :title="changePreview" type="info" :closable="false" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="changeDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="changeSaving" @click="submitChange">确认{{ changeType === 'increase' ? '加仓' : '减仓' }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -291,6 +346,7 @@ import {
   updateHoldingCost,
   createHolding,
   deleteHolding,
+  changeHolding,
 } from '../api/index.js'
 
 const router = useRouter()
@@ -313,6 +369,66 @@ const costSaving = ref(false)
 const createDialogVisible = ref(false)
 const createFormRef = ref(null)
 const createSaving = ref(false)
+
+// Change holding state (RFC-011)
+const changeDialogVisible = ref(false)
+const changeTarget = ref(null)
+const changeType = ref('increase')
+const changeAmount = ref(null)
+const changeNavInput = ref(null)
+const changeNote = ref('')
+const changeSaving = ref(false)
+const changePreview = computed(() => {
+  if (!changeTarget.value || !changeAmount.value) return ''
+  const nav = changeNavInput.value || changeTarget.value.latest_nav
+  if (!nav || nav <= 0) return '暂无净值，将按导入时成本估算'
+  const delta = changeAmount.value / nav
+  if (changeType.value === 'increase') {
+    const oldShares = Number(changeTarget.value.shares || 0)
+    const newShares = oldShares + delta
+    const oldCost = Number(changeTarget.value.cost_nav || 0)
+    const newCost = (oldShares * oldCost + changeAmount.value) / newShares
+    return `预计新增约 ${delta.toFixed(4)} 份 → 新份额 ${newShares.toFixed(4)}，新平均成本价约 ${newCost.toFixed(4)}`
+  } else {
+    const oldShares = Number(changeTarget.value.shares || 0)
+    const newShares = Math.max(0, oldShares - delta)
+    return `预计卖出约 ${delta.toFixed(4)} 份 → 剩余 ${newShares.toFixed(4)} 份${newShares <= 0 ? '（将清仓）' : ''}`
+  }
+})
+
+function openChangeDialog(row, type) {
+  changeTarget.value = row
+  changeType.value = type
+  changeAmount.value = null
+  changeNavInput.value = null
+  changeNote.value = ''
+  changeDialogVisible.value = true
+}
+
+async function submitChange() {
+  if (!changeAmount.value || changeAmount.value <= 0) {
+    ElMessage.warning('请输入大于 0 的金额')
+    return
+  }
+  changeSaving.value = true
+  try {
+    const payload = {
+      change_type: changeType.value,
+      amount: changeAmount.value,
+    }
+    if (changeNavInput.value) payload.cost_nav_input = changeNavInput.value
+    if (changeNote.value) payload.note = changeNote.value
+    const res = await changeHolding(changeTarget.value.id, payload)
+    ElMessage.success(res.message || '操作成功')
+    changeDialogVisible.value = false
+    await loadHoldings()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  } finally {
+    changeSaving.value = false
+  }
+}
+
 const createForm = reactive({
   fund_code: '',
   fund_name: '',

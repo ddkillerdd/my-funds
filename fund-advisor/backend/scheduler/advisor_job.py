@@ -102,6 +102,22 @@ class AdvisorJob:
             else:
                 logger.warning("Mail service not configured, skipping email")
 
+        # Step 2.5: RFC-012 回测验证 + 在线学习适应（每日顺带跑，10天自动收紧置信度）
+        backtest = {"validated": 0, "adapted": False}
+        try:
+            from backend.services.backtest_service import BacktestService
+            bsvc = BacktestService(self.db)
+            backtest["validated"] = bsvc.validate_due()
+            # 定期适应：满 10 个样本后每跑一次 refresh（幂等、无副作用）
+            adapted = bsvc.refresh_hit_rates(rolling_window=10)
+            backtest["adapted"] = adapted > 0
+            fb = bsvc.get_feedback()
+            backtest["has_evidence"] = fb.has_evidence
+            backtest["prompt_hint"] = fb.prompt_hint
+        except Exception as e:  # noqa: BLE001
+            logger.warning("backtest adapt failed in daily job: %s", e)
+            backtest["error"] = str(e)
+
         # Step 3: Build summary
         summary = {
             "analysis_ok": analysis_success and not is_fallback,
@@ -112,6 +128,7 @@ class AdvisorJob:
             "started_at": start_time.isoformat(),
             "finished_at": datetime.now().isoformat(),
             "model": self.model,
+            "backtest": backtest,
         }
 
         return {

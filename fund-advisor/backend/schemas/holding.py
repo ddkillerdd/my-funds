@@ -73,6 +73,25 @@ class HoldingDeleteResponse(BaseModel):
     status: str = "deleted"
 
 
+class HoldingChangeRequest(BaseModel):
+    """RFC-011: Record an add/increase or reduce/decrease operation by RMB amount.
+
+    Add (increase): shares += amount/nav, and recompute average cost_nav (B scheme).
+    Reduce (decrease): shares -= amount/nav; cost_nav unchanged; to 0 => clear.
+    """
+    change_type: str  # "increase" | "decrease"
+    amount: Decimal    # RMB amount invested/redeemed this operation
+    cost_nav_input: Optional[Decimal] = None  # actual buy price; default = latest nav
+    note: Optional[str] = None
+
+
+class HoldingChangeResponse(BaseModel):
+    """Result of a holding change operation."""
+    holding: HoldingResponse
+    change: dict
+    message: str = ""
+
+
 # ---------- Simple Import (RFC-002) ----------
 
 

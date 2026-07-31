@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.models.fund import Fund
 from backend.models.holding import FundHolding
 from backend.models.nav_history import FundNavHistory
+from backend.models.holding_change import HoldingChange
 from backend.schemas.holding import (
     HoldingResponse,
     HoldingsByPlatformResponse,
@@ -17,6 +18,8 @@ from backend.schemas.holding import (
     HoldingDeleteResponse,
     SimpleImportRecord,
     SimpleImportResult,
+    HoldingChangeRequest,
+    HoldingChangeResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,6 +228,132 @@ class HoldingService:
             "platform": FundHolding.platform,
         }
         return mapping.get(sort_by, FundHolding.market_value)
+
+    # ---------- RFC-011: Holding Change (add/reduce by RMB amount) ----------
+
+    def record_change(self, holding_id: int, body: HoldingChangeRequest) -> HoldingChangeResponse:
+        """Record an add (increase) or reduce (decrease) operation by RMB amount.
+
+        Add:
+            shares_delta = amount / nav
+            new_shares = old + delta
+            new cost_nav = (old_total_cost + amount) / new_shares   # recompute avg cost
+        Reduce:
+            shares_delta = amount / nav
+            new_shares = old - delta
+            cost_nav unchanged; if new_shares <= 0 -> clear (status=0)
+
+        Always writes a holding_changes record.
+        """
+        change_type = (body.change_type or "").strip().lower()
+        if change_type not in ("increase", "decrease"):
+            raise ValueError(f"Invalid change_type '{body.change_type}', must be increase|decrease")
+        if not body.amount or body.amount <= 0:
+            raise ValueError("amount must be > 0")
+
+        holding = self.db.execute(
+            select(FundHolding).where(FundHolding.id == holding_id)
+        ).scalar_one_or_none()
+        if not holding:
+            raise ValueError(f"Holding {holding_id} not found")
+        if holding.status != 1:
+            raise ValueError(f"Holding {holding_id} is not active (status={holding.status})")
+
+        # Resolve operation nav: cost_nav_input > latest net asset value > fund.latest_nav
+        nav = body.cost_nav_input
+        if not nav or nav <= 0:
+            fund = self.db.execute(
+                select(Fund).where(Fund.fund_code == holding.fund_code)
+            ).scalar_one_or_none()
+            nav = fund.latest_nav if fund and fund.latest_nav else None
+        if not nav or nav <= 0:
+            latest = self.db.execute(
+                select(FundNavHistory)
+                .where(FundNavHistory.fund_code == holding.fund_code)
+                .order_by(FundNavHistory.nav_date.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if latest and latest.unit_nav:
+                nav = latest.unit_nav
+        if not nav or nav <= 0:
+            raise ValueError(f"No NAV available to convert amount for {holding.fund_code}")
+
+        nav = Decimal(nav)
+        amount = Decimal(body.amount)
+        shares_delta = (amount / nav).quantize(Decimal("0.0001"))
+
+        old_shares = Decimal(holding.shares or 0)
+        old_cost_nav = Decimal(holding.cost_nav or 0)
+        old_market_value = Decimal(holding.market_value or 0)
+
+        if change_type == "increase":
+            new_shares = old_shares + shares_delta
+            # Recompute average cost: (old_total_cost + amount) / new_shares
+            old_total_cost = old_shares * old_cost_nav
+            new_cost_nav = (old_total_cost + amount) / new_shares
+            new_cost_nav = new_cost_nav.quantize(Decimal("0.0001"))
+            new_market_value = (new_shares * nav).quantize(Decimal("0.0001"))
+            record_type = "increase"
+            final_status = 1
+            holding.cost_nav = new_cost_nav
+        else:  # decrease
+            new_shares = old_shares - shares_delta
+            record_type = "decrease"
+            if new_shares <= 0:
+                new_shares = Decimal("0")
+                record_type = "clear"
+                final_status = 0  # clear / soft-delete
+            else:
+                final_status = 1
+            # cost_nav unchanged on reduce/clear
+            new_market_value = (new_shares * nav).quantize(Decimal("0.0001"))
+
+        holding.shares = new_shares
+        holding.market_value = new_market_value if new_shares > 0 else holding.market_value
+        holding.status = final_status
+        if new_shares > 0:
+            holding.nav_on_import = nav
+        self.db.flush()
+
+        # Write holding_changes record (import_id=0 => manual operation)
+        change = HoldingChange(
+            import_id=0,
+            holding_id=holding.id,
+            fund_code=holding.fund_code,
+            fund_name=holding.fund_name,
+            platform=holding.platform,
+            change_type=record_type,
+            shares_before=old_shares,
+            shares_after=new_shares,
+            shares_delta=shares_delta,
+            nav_at_change=nav,
+            mv_before=old_market_value,
+            mv_after=new_market_value,
+        )
+        self.db.add(change)
+        self.db.commit()
+        self.db.refresh(holding)
+
+        fund = self.db.execute(
+            select(Fund).where(Fund.fund_code == holding.fund_code)
+        ).scalar_one_or_none()
+
+        return HoldingChangeResponse(
+            holding=self._to_response(holding, fund),
+            change={
+                "id": change.id,
+                "change_type": record_type,
+                "shares_delta": str(shares_delta),
+                "shares_before": str(old_shares),
+                "shares_after": str(new_shares),
+                "nav_at_change": str(nav),
+                "amount": str(amount),
+                "cost_nav_after": str(holding.cost_nav or 0),
+            },
+            message=("清仓" if record_type == "clear" else ("加仓" if record_type == "increase" else "减仓"))
+            + "成功，下次分析将基于最新持仓",
+        )
+
 
     # ---------- Simple Import (RFC-002) ----------
 

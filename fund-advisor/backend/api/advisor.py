@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -64,6 +64,37 @@ def analyze_portfolio(
     db.add(report)
     db.commit()
     db.refresh(report)
+
+    # RFC-012: 建议回测快照（报告已入库，可关联 report_id）
+    try:
+        from backend.services.backtest_service import BacktestService
+        bsvc = BacktestService(db)
+        # 从已保存的报告 JSON 里提取 actions + 建议时净值，写入 advice_snapshot
+        saved = json.loads(report.report_json)
+        actions = [
+            {
+                "fund_code": a.get("fund_code"),
+                "fund_name": a.get("fund_name"),
+                "action": a.get("action"),
+                "change_pct": a.get("change_pct"),
+            }
+            for a in (saved.get("actions") or [])
+            if a.get("fund_code") and a.get("action")
+        ]
+        # 建议时净值：用报告里的 per_fund_diagnosis 或回退到净值表
+        navs = {}
+        for fd in (saved.get("per_fund_diagnosis") or []):
+            q = fd.get("quant_indicator", {})
+            if fd.get("fund_code") and q.get("nav"):
+                navs[fd["fund_code"]] = q["nav"]
+        bsvc.record_advice(
+            report_id=report.id,
+            advice_date=date.today(),
+            actions=actions,
+            fund_navs=navs,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("backtest record_advice failed: %s", e)
 
     # 清理旧报告，只保留最近的 MAX_REPORTS 份
     total = db.query(AdvisorReport).count()

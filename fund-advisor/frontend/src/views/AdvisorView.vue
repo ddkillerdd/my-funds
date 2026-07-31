@@ -111,6 +111,51 @@
             </div>
           </el-card>
 
+          <!-- RFC-012 回测 / 在线学习命中率 -->
+          <el-card v-if="backtestStats" shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><TrendCharts /></el-icon>
+                <span>历史建议回测（在线学习）</span>
+              </div>
+            </template>
+            <div class="backtest-block">
+              <div class="backtest-grid">
+                <div class="backtest-cell">
+                  <div class="bt-num">{{ backtestStats.directional }}</div>
+                  <div class="bt-label">方向建议数</div>
+                </div>
+                <div class="backtest-cell">
+                  <div class="bt-num">{{ backtestStats.validated }}</div>
+                  <div class="bt-label">已验证</div>
+                </div>
+                <div class="backtest-cell">
+                  <div class="bt-num" :class="{ 'bt-good': (backtestStats.hit_rate||0) >= 0.5, 'bt-bad': (backtestStats.hit_rate||0) < 0.5 && backtestStats.hit_rate !== null }">
+                    {{ backtestStats.hit_rate !== null ? Math.round(backtestStats.hit_rate*100) + '%' : '—' }}
+                  </div>
+                  <div class="bt-label">整体命中率(相对沪深300)</div>
+                </div>
+              </div>
+              <div v-if="Object.keys(backtestStats.by_action||{}).length" class="by-action">
+                <el-tag
+                  v-for="(v, k) in backtestStats.by_action"
+                  :key="k"
+                  :type="(v.hit_rate||0)>=0.5 ? 'success' : 'warning'"
+                  size="small"
+                  style="margin: 2px 6px 2px 0"
+                >
+                  {{ k }}: {{ Math.round((v.hit_rate||0)*100) }}% ({{ v.hits }}/{{ v.total }})
+                </el-tag>
+              </div>
+              <div v-if="backtestStats && report && report.backtest_feedback" class="bt-hint">
+                <el-alert type="info" :closable="false" :title="report.backtest_feedback.prompt_hint" />
+              </div>
+              <div v-else-if="backtestStats.directional===0" class="bt-empty">
+                尚无已回测建议——系统会在每次报告生成后记录建议，积累足够样本后自动校准置信度（每10天适应）。
+              </div>
+            </div>
+          </el-card>
+
           <!-- Holdings Health -->
           <el-card shadow="hover" class="section-card">
             <template #header>
@@ -299,7 +344,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Promotion, List, Warning, DataAnalysis, Tickets, WarnTriangleFilled, CircleCheckFilled, Histogram } from '@element-plus/icons-vue'
+import { Promotion, List, Warning, DataAnalysis, Tickets, WarnTriangleFilled, CircleCheckFilled, Histogram, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
@@ -314,6 +359,7 @@ const reportHistory = ref([])
 const reportHistoryTotal = ref(0)
 const historySkip = ref(0)
 const hasMoreHistory = ref(false)
+const backtestStats = ref(null)
 const HISTORY_LIMIT = 20
 
 function healthColor(score) {
@@ -374,13 +420,24 @@ async function runAnalysis() {
     activeReportTime.value = data.generated_at
     activeReportId.value = null
     ElMessage.success('分析完成，报告已保存')
-    // Refresh history
+    // Refresh history + backtest stats
     await loadHistory()
+    await loadBacktestStats()
   } catch (e) {
     error.value = '分析请求失败: ' + e.message
     ElMessage.error('分析失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadBacktestStats() {
+  try {
+    const resp = await fetch('/api/backtest/stats')
+    if (!resp.ok) return
+    backtestStats.value = await resp.json()
+  } catch {
+    backtestStats.value = null
   }
 }
 
@@ -435,6 +492,9 @@ async function loadMoreHistory() {
 }
 
 onMounted(async () => {
+  // RFC-012 backtest stats
+  await loadBacktestStats()
+
   // Load history list
   await loadHistory()
 
@@ -741,5 +801,38 @@ onMounted(async () => {
   border-radius: 4px;
   font-size: 13px;
   color: #606266;
+}
+
+/* RFC-012 回测命中率 */
+.backtest-grid {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.backtest-cell {
+  flex: 1;
+  text-align: center;
+  padding: 8px 4px;
+  background: #fafbfc;
+  border-radius: 6px;
+}
+.bt-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: #303133;
+}
+.bt-num.bt-good { color: #67c23a; }
+.bt-num.bt-bad { color: #e65d5d; }
+.bt-label {
+  font-size: 11px;
+  color: #909399;
+  margin-top: 4px;
+}
+.by-action { margin-bottom: 10px; }
+.bt-hint { margin-top: 4px; }
+.bt-empty {
+  color: #909399;
+  font-size: 13px;
+  line-height: 1.6;
 }
 </style>

@@ -113,6 +113,19 @@ class AdvisorService:
 
         # 3. 转换为 API JSON
         result = self._report_to_api_json(report, t0)
+
+        # RFC-012: 在线学习反馈 → 附加到报告（报告可见的历史命中率）
+        try:
+            from backend.services.backtest_service import BacktestService
+            fb = BacktestService(self.db).get_feedback()
+            if fb.has_evidence and fb.prompt_hint:
+                result["backtest_feedback"] = {
+                    "prompt_hint": fb.prompt_hint,
+                    "action_hit_rates": fb.action_hit_rates,
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.warning("backtest feedback enrich failed: %s", e)
+
         return result
 
     def _analyze_v2(self) -> dict:
@@ -224,6 +237,52 @@ class AdvisorService:
     # 报告格式转换: AnalysisReport → API JSON
     # ═══════════════════════════════════════════════════
 
+    def _extract_actions(self, report: AnalysisReport) -> list[dict]:
+        """从报告提取动作列表（含方向、调仓幅度、建议时净值）。"""
+        # fund_code -> nav at advice (from ground_truth / fund info)
+        nav_by_code: dict[str, Decimal] = {}
+        qi_map = getattr(report, "quant_map", None) or {}
+        for code, qi in qi_map.items():
+            if qi and getattr(qi, "nav_history", None):
+                navs = qi.nav_history
+                if navs:
+                    nav_by_code[code] = Decimal(str(navs[-1].value))
+
+        actions = []
+        if report.portfolio_diagnosis:
+            pd = report.portfolio_diagnosis
+            for rs in pd.rebalance_suggestions:
+                fund_name = rs.fund_code
+                for fd in report.per_fund_diagnosis:
+                    if fd.fund_code == rs.fund_code:
+                        fund_name = fd.fund_name
+                        break
+                actions.append({
+                    "fund_code": rs.fund_code,
+                    "fund_name": fund_name,
+                    "action": rs.action,
+                    "priority": "medium",
+                    "reason": rs.reason,
+                    "change_pct": rs.change_pct,
+                    "expected_effect": f"调整 {rs.change_pct:+.1f}%, 目标占比 {rs.target_ratio:.1f}%",
+                })
+        suggested_codes = {a["fund_code"] for a in actions}
+        for fd in report.per_fund_diagnosis:
+            if fd.fund_code not in suggested_codes and fd.debate_summary:
+                ds = fd.debate_summary
+                actions.append({
+                    "fund_code": fd.fund_code,
+                    "fund_name": fd.fund_name,
+                    "action": ds.action.get("type", "hold") if ds.action else "hold",
+                    "priority": "low",
+                    "reason": ds.action.get("reasoning", "") if ds.action else "",
+                    "expected_effect": "维持当前配置",
+                })
+        # attach nav for snapshot
+        for a in actions:
+            a["nav"] = nav_by_code.get(a["fund_code"])
+        return actions
+
     def _report_to_api_json(self, report: AnalysisReport, t0: float) -> dict:
         """将 AnalysisReport 转换为 API 兼容的 JSON 格式"""
 
@@ -289,37 +348,7 @@ class AdvisorService:
             })
 
         # ---- 操作建议 ----
-        actions = []
-        if report.portfolio_diagnosis:
-            pd = report.portfolio_diagnosis
-            for rs in pd.rebalance_suggestions:
-                # 从持仓中找到基金名
-                fund_name = rs.fund_code
-                for fd in report.per_fund_diagnosis:
-                    if fd.fund_code == rs.fund_code:
-                        fund_name = fd.fund_name
-                        break
-                actions.append({
-                    "fund_code": rs.fund_code,
-                    "fund_name": fund_name,
-                    "action": rs.action,
-                    "priority": "medium",
-                    "reason": rs.reason,
-                    "expected_effect": f"调整 {rs.change_pct:+.1f}%, 目标占比 {rs.target_ratio:.1f}%",
-                })
-        # 对没有调仓建议的基金添加 hold
-        suggested_codes = {a["fund_code"] for a in actions}
-        for fd in report.per_fund_diagnosis:
-            if fd.fund_code not in suggested_codes and fd.debate_summary:
-                ds = fd.debate_summary
-                actions.append({
-                    "fund_code": fd.fund_code,
-                    "fund_name": fd.fund_name,
-                    "action": ds.action.get("type", "hold") if ds.action else "hold",
-                    "priority": "low",
-                    "reason": ds.action.get("reasoning", "") if ds.action else "",
-                    "expected_effect": "维持当前配置",
-                })
+        actions = self._extract_actions(report)
 
         # ---- 组合诊断 ----
         portfolio_diag = {

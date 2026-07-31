@@ -63,6 +63,11 @@ export function updateHoldingCost(holdingId, costNav) {
   return api.patch(`/holdings/${holdingId}`, { cost_nav: costNav })
 }
 
+export function changeHolding(holdingId, payload) {
+  // RFC-011: record add/reduce by RMB amount
+  return api.post(`/holdings/${holdingId}/change`, payload)
+}
+
 export function createHolding(data) {
   return api.post('/holdings', data)
 }
