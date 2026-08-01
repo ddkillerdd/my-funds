@@ -183,13 +183,15 @@ class LLMClient:
         message = choices[0].get("message", {})
         content = message.get("content")
 
-        if content is None:
-            # NIM reasoning models put content in reasoning field
-            reasoning = message.get("reasoning")
-            if reasoning:
+        # RFC-014 修复: content 可能为 None 或空字符串(推理模型先推理后回答,
+        # 当 reasoning_tokens 占满 max_tokens 时 content 为空)。
+        # 兼容三套字段: content / reasoning_content(opencode·deepseek) / reasoning(NIM)
+        if not content:
+            reasoning = message.get("reasoning_content") or message.get("reasoning")
+            if reasoning and isinstance(reasoning, str) and reasoning.strip():
                 content = reasoning
             else:
-                raise RuntimeError(f"No content or reasoning in message: {json.dumps(message)[:300]}")
+                raise RuntimeError(f"No content in message (reasoning empty): {json.dumps(message)[:300]}")
 
         return content.strip()
 

@@ -416,12 +416,12 @@ class Analyzer:
         try:
             prompt = build_trend_prompt(qi)
             try:
-                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=2048,
                                      step_label=f"trend_{qi.fund_code}", model=trend_model)
                 model_sources["trend"] = trend_model
             except Exception:
                 logger.info(f"Trend model {trend_model} failed, falling back to {trend_fallback}")
-                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=2048,
                                      step_label=f"trend_{qi.fund_code}_fb", model=trend_fallback)
                 model_sources["trend"] = trend_fallback
             data = parse_json_response(raw)
@@ -458,11 +458,11 @@ class Analyzer:
         try:
             prompt = build_risk_prompt(qi)
             try:
-                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=2048,
                                      step_label=f"risk_{qi.fund_code}", model=risk_model)
                 model_sources["risk"] = risk_model
             except Exception:
-                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=2048,
                                      step_label=f"risk_{qi.fund_code}_fb", model=trend_fallback)
                 model_sources["risk"] = trend_fallback
             data = parse_json_response(raw)
@@ -498,12 +498,12 @@ class Analyzer:
         try:
             prompt = build_value_prompt(qi)
             try:
-                raw = self.llm.call(prompt, temperature=0.2, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.2, max_tokens=2048,
                                      step_label=f"value_{qi.fund_code}", model=value_model)
                 model_sources["value"] = value_model
             except Exception:
                 logger.info(f"Value {value_model} failed, falling back to {value_fallback}")
-                raw = self.llm.call(prompt, temperature=0.2, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.2, max_tokens=2048,
                                      step_label=f"value_{qi.fund_code}_fb", model=value_fallback)
                 model_sources["value"] = value_fallback
             data = parse_json_response(raw)
@@ -537,11 +537,11 @@ class Analyzer:
         try:
             prompt = build_technical_prompt(qi)
             try:
-                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=2048,
                                      step_label=f"tech_{qi.fund_code}", model=tech_model)
                 model_sources["tech"] = tech_model
             except Exception:
-                raw = self.llm.call(prompt, temperature=0.3, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.3, max_tokens=2048,
                                      step_label=f"tech_{qi.fund_code}_fb", model=tech_fallback)
                 model_sources["tech"] = tech_fallback
             data = parse_json_response(raw)
@@ -650,12 +650,12 @@ class Analyzer:
             prompt += f"\n\n## 模型来源（不同视角由不同AI模型分析）\n{source_info}\n\n请检查：不同模型的判断是否存在系统性偏差？（例如某个模型在回撤极大的基金上仍然给高分）"
 
             try:
-                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.1, max_tokens=2048,
                                      step_label=f"debate_{qi.fund_code}", model=debate_model)
                 debate_model_used = debate_model
             except Exception:
                 logger.info(f"Debate model {debate_model} failed, falling back to {debate_fallback}")
-                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
+                raw = self.llm.call(prompt, temperature=0.1, max_tokens=2048,
                                      step_label=f"debate_{qi.fund_code}_fb", model=debate_fallback)
                 debate_model_used = debate_fallback
 
@@ -907,7 +907,7 @@ class Analyzer:
             prompt = build_cross_validation_prompt(report_text, all_facts)
             # Cross-validation uses nano-9b (checklist-like, no deep reasoning needed)
             crossval_model = self.llm.config.model_assignments.get("cross_val", "nvidia/nvidia-nemotron-nano-9b-v2")
-            raw = self.llm.call(prompt, temperature=0.0, max_tokens=4096,
+            raw = self.llm.call(prompt, temperature=0.0, max_tokens=2048,
                                  step_label="cross_val", model=crossval_model)
             data = parse_json_response(raw)
 

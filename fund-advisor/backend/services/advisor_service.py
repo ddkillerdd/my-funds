@@ -91,21 +91,21 @@ class AdvisorService:
         config = LLMConfig(
             api_base=self.settings.NEWAPI_BASE_URL,
             api_key=self.settings.NEWAPI_API_KEY,
-            primary_model="nvidia/nvidia-nemotron-nano-9b-v2",
+            primary_model="deepseek-v4-flash",
             fallback_models=[
-                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "deepseek-ai/deepseek-v4-flash",
+                "minimax-m3",
+                "stepfun-ai/step-3.7-flash",
             ],
             default_timeout=45.0,
             fallback_timeout=60.0,
             model_assignments={
-                "trend": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "risk": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "value": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "tech": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "debate": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "portfolio": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "cross_val": "nvidia/nvidia-nemotron-nano-9b-v2",
+                "trend": "deepseek-v4-flash",
+                "risk": "deepseek-v4-flash",
+                "value": "deepseek-v4-flash",
+                "tech": "deepseek-v4-flash",
+                "debate": "deepseek-v4-flash",
+                "portfolio": "deepseek-v4-flash",
+                "cross_val": "deepseek-v4-flash",
             },
         )
         analyzer = Analyzer(config)
