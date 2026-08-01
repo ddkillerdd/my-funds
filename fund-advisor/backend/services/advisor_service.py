@@ -152,49 +152,64 @@ class AdvisorService:
 
         fa_holdings = []
 
+        # ── 按基金去重聚合 (RFC-015 数据基建) ────────────────────────────
+        # 同一 fund_code 可能在 fund_holdings 有多个账户/多笔持仓(如 018044 被拆
+        # MANUAL_ + ALIPAY_ 两条)。旧逻辑逐行生成 FAHolding → 引擎把它当两只
+        # 独立基金重复分析、权重重复计算。这里按 fund_code 合并:
+        #   - shares: 所有行累加
+        #   - current_mv: 实时市值 = Σ(shares_i × latest_nav), 无最新净值才用导入快照
+        #   - cost: 有 cost_nav 的行加权累加, 保留成本
+        agg = {}  # fund_code -> dict
         for h, f in holdings:
             code = h.fund_code
-            name = h.fund_name
-            ftype = f.fund_type if f else "未知"
+            if code not in agg:
+                agg[code] = {
+                    "name": h.fund_name,
+                    "ftype": f.fund_type if f else "未知",
+                    "shares": 0.0,
+                    "current_mv": 0.0,
+                    "cost": 0.0,
+                    "ref": None,  # 任一行引用(取 nav_history 用)
+                }
+            a = agg[code]
             shares = float(h.shares or 0)
-
-            # 当前市值
+            a["shares"] += shares
+            # 当前市值: 优先最新净值实时算, 否则用导入快照
             if f and f.latest_nav and shares:
-                current_mv = shares * float(f.latest_nav)
+                a["current_mv"] += shares * float(f.latest_nav)
             elif h.market_value:
-                current_mv = float(h.market_value)
-            else:
-                current_mv = 0.0
-
-            # 成本
+                a["current_mv"] += float(h.market_value)
+            # 成本: 有 cost_nav 才计
             if h.cost_nav and shares:
-                cost = shares * float(h.cost_nav)
-            else:
-                cost = 0.0
+                a["cost"] += shares * float(h.cost_nav)
+            if a["ref"] is None:
+                a["ref"] = h
 
-            # 总市值占比
-            mv_ratio = 0.0  # 稍后计算
-
+        total_mv = 0.0
+        for code, a in agg.items():
             # 判断货币基金
             is_money = code in self._money_fund_codes()
-
-            # 加载净值历史
-            nav_history = self._load_nav_history(code)
-
-            fa_h = FAHolding(
-                fund_code=code,
-                fund_name=name,
-                fund_type=ftype,
-                current_mv=round(current_mv, 2),
-                cost=round(cost, 2),
-                mv_ratio=mv_ratio,
-                is_money_fund=is_money,
-                nav_history=nav_history,
+            # 加载净值历史(同基金各账户一致, 用任一引用即可)
+            nav_history = (
+                self._load_nav_history(code)
+                if not is_money
+                else self._load_nav_history(code)
             )
-            fa_holdings.append(fa_h)
+            fa_holdings.append(
+                FAHolding(
+                    fund_code=code,
+                    fund_name=a["name"],
+                    fund_type=a["ftype"],
+                    current_mv=round(a["current_mv"], 2),
+                    cost=round(a["cost"], 2),
+                    mv_ratio=0.0,
+                    is_money_fund=is_money,
+                    nav_history=nav_history,
+                )
+            )
+            total_mv += a["current_mv"]
 
         # 计算占比
-        total_mv = sum(h.current_mv for h in fa_holdings)
         if total_mv > 0:
             for h in fa_holdings:
                 h.mv_ratio = round(h.current_mv / total_mv * 100, 1)
