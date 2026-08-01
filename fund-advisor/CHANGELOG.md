@@ -2,6 +2,42 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [6.3] - 2026-08-01 — 动作确定性收敛（RFC-013）
+
+### Changed
+- **动作决策全量化，LLM 只解读**：新增 `fund-analyzer/engine/decision.py`（`score_views_quant` / `detect_regime` / `deterministic_action` / `merge_with_llm_explanation` / `summarize_regime`），同一量化事实产出 100% 可复现的动作，消除同日多报告动作摆荡。
+- **Regime-aware 牛熊感知**（FINSABER 实证驱动）：牛市不再误砍优质资产（000311 不再被误减仓）；熊市严格止损（负 sharpe 基金 reduce），避免死扛深亏。
+- `analyzer.py`：`_analyze_4_views` 四视角分数改量化计算（LLM 仅作 `llm_interpretive` 展示）；`_debate_synthesis` 动作走 `deterministic_action` + merge，LLM 观点降级为 `note` 附注。
+
+### Added
+- 报告字段：`decision_source="quant_primary"`、`debate.action.note`（LLM 冲突附注）、`regime`。
+- 测试 `tests/test_decision.py`（19 个）幂等/regime 三态/六档边界/冲突合并。
+
+### Fixed
+- **同日多报告动作矛盾**（id=19/20/21 vs id=22）：同持仓量化事实一致但 LLM 打分随机摆荡 ±20 分导致动作反复，现由量化锁定。
+
+### Verified
+- 全引擎 120 测试通过（101 原 + 19 新）。
+- 真实报告 id=22 四基金动作全一致（watch/hold/hold/hold），全部 `quant_primary`；161725 冲突附注生效。
+
+## [6.2] - 2026-07-31 — 建议回测 + 自适应在线学习（RFC-012）
+
+### Added
+- **建议回测** `fund-analyzer/engine/backtest.py`：相对沪深300 判定 REDUCE/INCREASE 命中，HOLD/WATCH 中性。
+- **自适应在线学习** `engine/learning.py`：贝叶斯收缩校准置信度（0.40-0.95），`advice_snapshot` + `factor_hit_rate` 表。
+- `BacktestService` + API `/api/backtest/stats|validate|adapt`；报告生成后自动记录快照，daily scheduler 每日验证 + 10 天适应。
+- 前端 AdvisorView 回测命中率展示卡。
+
+### Notes
+- `validate_due` 用 `fund_nav_history` 实时净值回测，报告即便没存 NAV 也可回测。
+
+## [6.1] - 2026-07-31 — 持仓操作记录（RFC-011）
+
+### Added
+- **持仓增/减仓** `POST /holdings/{id}/change` + 前端 HoldingsView 按钮/对话框。
+- 决策：减仓到 0 自动清仓；按实际人民币金额输入；加仓重算平均成本（B 方案，为盈利精确服务）。
+- 文档 `fund-advisor/docs/RFC-011-holding-change-ops.md`。
+
 ## [6.0.1] - 2026-07-31 — 修复每日重复邮件
 
 ### Fixed

@@ -265,18 +265,29 @@ class AdvisorService:
                     "reason": rs.reason,
                     "change_pct": rs.change_pct,
                     "expected_effect": f"调整 {rs.change_pct:+.1f}%, 目标占比 {rs.target_ratio:.1f}%",
+                    # RFC-013: 量化决策元数据（若 rebalance 源缺失则为 None，由 per-fund 兜底）
+                    "decision_source": rs.decision_source if hasattr(rs, "decision_source") else "rebalance",
+                    "regime": rs.regime if hasattr(rs, "regime") else None,
+                    "note": rs.note if hasattr(rs, "note") else None,
                 })
         suggested_codes = {a["fund_code"] for a in actions}
         for fd in report.per_fund_diagnosis:
             if fd.fund_code not in suggested_codes and fd.debate_summary:
                 ds = fd.debate_summary
+                a_dict = ds.action if isinstance(ds.action, dict) else {}
                 actions.append({
                     "fund_code": fd.fund_code,
                     "fund_name": fd.fund_name,
-                    "action": ds.action.get("type", "hold") if ds.action else "hold",
+                    "action": a_dict.get("type", "hold") if a_dict else "hold",
                     "priority": "low",
-                    "reason": ds.action.get("reasoning", "") if ds.action else "",
+                    "reason": a_dict.get("reasoning", "") if a_dict else "",
                     "expected_effect": "维持当前配置",
+                    # RFC-013: 量化决策源/牛熊状态/调仓幅度/冲突标注 一并透传到 actions
+                    "decision_source": a_dict.get("decision_source"),
+                    "regime": a_dict.get("regime"),
+                    "change_pct": a_dict.get("change_pct"),
+                    "note": a_dict.get("note"),
+                    "trigger_conditions": a_dict.get("trigger_conditions", []),
                 })
         # attach nav for snapshot
         for a in actions:

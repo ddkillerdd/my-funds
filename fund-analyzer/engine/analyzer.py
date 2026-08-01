@@ -70,6 +70,14 @@ from .llm_client import (
     fallback_debate,
 )
 
+# RFC-013: 动作确定性收敛（量化硬决策 + LLM 只解读）
+from .decision import (
+    score_views_quant,
+    deterministic_action,
+    merge_with_llm_explanation,
+    detect_regime as _detect_regime,
+)
+
 logger = logging.getLogger(__name__)
 
 CST = timezone(timedelta(hours=8))
@@ -396,6 +404,9 @@ class Analyzer:
         # Track which model was actually used for each view
         model_sources: Dict[str, str] = {}
 
+        # RFC-013: 四视角分数改确定性量化（LLM 不再打分，只提供解读叙事）
+        _vs = score_views_quant(qi)
+
         # --- Trend View: omni-30b → nano-9b → calc ---
         trend_model = self.llm.config.model_assignments.get("trend", self.llm.config.primary_model)
         trend_fallback = "nvidia/nvidia-nemotron-nano-9b-v2"
@@ -413,7 +424,7 @@ class Analyzer:
             data = parse_json_response(raw)
             if data:
                 results["trend"] = TrendViewDiagnosis(
-                    overall_score=data.get("overall_trend_score"),
+                    overall_score=_vs["trend"],
                     trend_direction=data.get("trend_direction", "unknown"),
                     trend_strength_label=data.get("trend_strength_label", ""),
                     diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
@@ -429,7 +440,7 @@ class Analyzer:
             model_sources["trend"] = "fallback_calc"
             data = fallback_trend_diagnosis(qi)
             results["trend"] = TrendViewDiagnosis(
-                overall_score=data.get("overall_trend_score", 50),
+                overall_score=_vs["trend"],
                 trend_direction=data.get("trend_direction", "unknown"),
                 trend_strength_label=data.get("trend_strength_label", ""),
                 diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
@@ -454,7 +465,7 @@ class Analyzer:
             data = parse_json_response(raw)
             if data:
                 results["risk"] = RiskViewDiagnosis(
-                    overall_score=data.get("overall_risk_score"),
+                    overall_score=_vs["risk"],
                     risk_level=data.get("risk_level", "unknown"),
                     diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
                     key_risk=data.get("key_risk", ""),
@@ -469,7 +480,7 @@ class Analyzer:
             model_sources["risk"] = "fallback_calc"
             data = fallback_risk_diagnosis(qi)
             results["risk"] = RiskViewDiagnosis(
-                overall_score=data.get("overall_risk_score", 50),
+                overall_score=_vs["risk"],
                 risk_level=data.get("risk_level", "unknown"),
                 diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
                 key_risk=data.get("key_risk", ""),
@@ -495,7 +506,7 @@ class Analyzer:
             data = parse_json_response(raw)
             if data:
                 results["value"] = ValueViewDiagnosis(
-                    overall_score=data.get("overall_value_score"),
+                    overall_score=_vs["value"],
                     diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
                     key_risk=data.get("key_risk", ""),
                     key_opportunity=data.get("key_opportunity", ""),
@@ -509,7 +520,7 @@ class Analyzer:
             model_sources["value"] = "fallback_calc"
             data = fallback_value_diagnosis(qi)
             results["value"] = ValueViewDiagnosis(
-                overall_score=data.get("overall_value_score", 50),
+                overall_score=_vs["value"],
                 diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
                 key_risk=data.get("key_risk", ""),
                 key_opportunity=data.get("key_opportunity", ""),
@@ -533,7 +544,7 @@ class Analyzer:
             data = parse_json_response(raw)
             if data:
                 results["technical"] = TechnicalViewDiagnosis(
-                    overall_score=data.get("overall_tech_score"),
+                    overall_score=_vs["tech"],
                     diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
                     key_risk=data.get("key_risk", ""),
                     key_opportunity=data.get("key_opportunity", ""),
@@ -547,7 +558,7 @@ class Analyzer:
             model_sources["tech"] = "fallback_calc"
             data = fallback_technical_diagnosis(qi)
             results["technical"] = TechnicalViewDiagnosis(
-                overall_score=data.get("overall_tech_score", 50),
+                overall_score=_vs["tech"],
                 diagnosis=[DiagnosisItem(**d) for d in data.get("diagnosis", []) if isinstance(d, dict)],
                 key_risk=data.get("key_risk", ""),
                 key_opportunity=data.get("key_opportunity", ""),
@@ -558,6 +569,42 @@ class Analyzer:
         # Stash model sources for later use
         results["_model_sources"] = model_sources
         return results
+
+    def _detect_fund_regime(self, qi: QuantIndicators) -> str:
+        """RFC-013: 单基金层面的市场状态感知（牛/熊/震荡）。
+
+        纯确定性、无 LLM，基于已有量化事实（趋势方向 + 最大回撤 + Sharpe + 超额收益）
+        推断基金所处市场状态，用于 regime-aware 动作调节。数据不足时回退 "sideways"。
+
+        ⚠️ 已知局限：单基金推断，非真实 5 大指数广度。
+        待接入 batch_fetch_indexes 的真实指数序列后升级为组合级 regime（RFC-013 可选增强）。
+        """
+        if qi is None:
+            return "sideways"
+        trend_dir = qi.trend.trend_direction if qi.trend else "unknown"
+        max_dd = abs(qi.risk.max_drawdown_pct or 0) if qi.risk else 0
+        sharpe = qi.efficiency.sharpe_ratio if qi.efficiency and qi.efficiency.sharpe_ratio is not None else 0.0
+        pb = qi.peer_benchmark
+        excess = pb.excess_6m if pb else None
+
+        # 牛：趋势向上 且（超额收益为正 或 回撤不深且Sharpe为正）
+        if trend_dir == "up":
+            if excess is not None and excess < -3:
+                return "sideways"  # 逆市上涨但跑输基准，谨慎
+            if excess is not None and excess >= 0:
+                return "bull"
+            # 无基准数据：用回撤+Sharpe 佐证
+            if max_dd < 12 and sharpe > 0.3:
+                return "bull"
+            return "sideways"
+
+        # 熊：趋势向下 且 深回撤 或 负Sharpe（从严）
+        if trend_dir == "down":
+            if max_dd >= 15 or sharpe < 0:
+                return "bear"
+            return "sideways"
+
+        return "sideways"
 
     def _debate_synthesis(
         self,
@@ -576,6 +623,10 @@ class Analyzer:
         debate_model = self.llm.config.model_assignments.get("debate", "deepseek-ai/deepseek-v4-flash")
         debate_fallback = self.llm.config.model_assignments.get("risk", "nvidia/nvidia-nemotron-nano-9b-v2")
         model_sources = model_sources or {}
+
+        # RFC-013: 动作确定性收敛——先算量化动作（regime-aware，幂等），LLM 只做解读。
+        regime = self._detect_fund_regime(qi)
+        quant_action = deterministic_action(regime, qi)
 
         try:
             # Build model-source-enriched prompt
@@ -604,6 +655,9 @@ class Analyzer:
 
             if data:
                 raw_action = data.get("action") or {}
+                # 量化动作锁死，LLM 输出降级为解释/矛盾标注
+                final_action = merge_with_llm_explanation(quant_action, data)
+                final_action["regime"] = regime
                 return DebateSummary(
                     contradictions=[
                         Contradiction(**c) for c in data.get("contradictions", [])
@@ -615,7 +669,7 @@ class Analyzer:
                     health_label=data.get("health_label", ""),
                     strengths=data.get("strengths", []),
                     risks=data.get("risks", []),
-                    action=normalize_action(raw_action),
+                    action=normalize_action(final_action),
                     confidence=data.get("confidence", 0.5),
                     uncertainties=data.get("uncertainties", []),
                     # v5: model-level reliability
@@ -629,6 +683,8 @@ class Analyzer:
         except Exception as e:
             logger.warning(f"Debate failed for {qi.fund_code}: {e}")
             data = fallback_debate(qi, trend.__dict__, risk.__dict__, value.__dict__, technical.__dict__)
+            final_action = merge_with_llm_explanation(quant_action, data.get("action") or {})
+            final_action["regime"] = regime
             return DebateSummary(
                 contradictions=[Contradiction(**c) for c in data.get("contradictions", []) if isinstance(c, dict)],
                 consensus_level=data.get("consensus_level", 0.5),
@@ -637,7 +693,7 @@ class Analyzer:
                 health_label=data.get("health_label", ""),
                 strengths=data.get("strengths", []),
                 risks=data.get("risks", []),
-                action=normalize_action(data.get("action") or {}),
+                action=normalize_action(final_action),
                 confidence=data.get("confidence", 0.4),
                 uncertainties=data.get("uncertainties", []),
                 model_sources=model_sources,
