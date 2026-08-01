@@ -2,6 +2,15 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [6.4.1] - 2026-08-01 — 量化组合诊断 rebalance 阈值门控
+
+### Fixed
+- **量化组合诊断意外覆盖 per-fund 决策（回归）**：量化版 `_portfolio_synthesis` 总是生成 4 只基金 rebalance_suggestions，被后端无条件当顶层 `actions`（advisor_service.py），导致 id=26 动作全变 `source=rebalance`、`regime=None`，覆盖 RFC-013 的 `quant_primary` 决策。
+- 修复：`rebalance_suggestions` **仅当组合偏离有效前沿 >3% 才生成**，否则返回空列表 → 让 per-fund 的 `quant_primary`+`regime` 决策主导（与 id=23/25 行为一致）。`rebalance_direction` 阈值统一为 >3%，清理死代码 `optimal_vs_current`。
+
+### Added
+- 组合诊断门控测试 3 个（接近前沿不生成建议 / 显著偏离生成建议 / 量化标签非空），全引擎 126 测试通过。
+
 ## [6.4] - 2026-08-01 — run-advisor 落库 + 量化组合诊断
 
 ### Fixed
