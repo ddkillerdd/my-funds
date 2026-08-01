@@ -368,6 +368,11 @@ class HoldingService:
         result.total = len(records)
 
         for rec in records:
+            # RFIC-015 导入校验: 脏数据不落库, 记入 errors
+            error = self._validate_simple_record(rec)
+            if error:
+                result.errors.append({"fund_code": rec.fund_code, "message": error})
+                continue
             try:
                 holding = self._simple_import_one(rec)
                 result.success += 1
@@ -380,6 +385,35 @@ class HoldingService:
                 })
 
         return result
+
+    def _validate_simple_record(self, rec: SimpleImportRecord) -> Optional[str]:
+        """RFC-015 导入校验。返回错误信息, 无错误返回 None。
+
+        校验项:
+          1. fund_code 必须 6 位纯数字(基金代码格式)
+          2. market_value 必须 > 0 且为有限数
+          3. platform 必须非空
+        """
+        code = (rec.fund_code or "").strip()
+        if not code:
+            return "基金代码不能为空"
+        if not (code.isdigit() and len(code) == 6):
+            return f"基金代码格式非法: {code!r}(应为6位数字)"
+
+        mv = rec.market_value
+        if mv is None:
+            return "持有金额不能为空"
+        if mv <= 0:
+            return f"持有金额必须大于0, 收到 {mv}"
+        try:
+            float(mv)
+        except (TypeError, ValueError):
+            return f"持有金额非法: {mv!r}"
+
+        platform = (rec.platform or "").strip()
+        if not platform:
+            return "销售平台不能为空"
+        return None
 
     def _simple_import_one(self, rec: SimpleImportRecord) -> HoldingResponse:
         """Import a single holding from fund_code + market_value."""
