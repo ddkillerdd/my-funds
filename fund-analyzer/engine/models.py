@@ -364,6 +364,55 @@ class FundDiagnosis:
 # ============================================================
 
 @dataclass
+class PositionAction:
+    """RFC-014 唯一权威动作结构（决策引擎输出，直接进报告+前端）
+
+    action 由 target_weight 与 current_weight 之差派生（asducer 唯一因），
+    全量化、幂等、零 LLM 依赖。
+    """
+    fund_code: str = ""
+    action: str = "hold"             # buy/increase/hold/reduce/sell
+    action_label: str = "持有"
+    current_weight: float = 0.0       # 十进制
+    target_weight: float = 0.0        # 十进制
+    change_weight_pp: float = 0.0     # 变化百分点 (target-current)*100
+    target_weight_pct: float = 0.0    # 目标权重%, 前端展示用
+    regime: str = "sideways"
+    direction_score: float = 0.0      # L1 [-1,+1]
+    momentum_12m: float = 0.0
+    vol: float = 0.0                  # 年化波动率%
+    max_drawdown: float = 0.0         # 历史最大回撤%
+    current_drawdown: float = 0.0     # 当前回撤%
+    sharpe: float = 0.0
+    decision_source: str = "quant_primary"
+    reason: str = ""
+    risk_hits: List[str] = field(default_factory=list)  # 命中的风控规则 R1..R6
+    friction_held: bool = False       # 是否因换手触发带而保持不动 (R6)
+
+    def to_dict(self) -> Dict[str, any]:
+        return {
+            "fund_code": self.fund_code,
+            "action": self.action,
+            "action_label": self.action_label,
+            "current_weight": self.current_weight,
+            "target_weight": self.target_weight,
+            "change_weight_pp": self.change_weight_pp,
+            "target_weight_pct": self.target_weight_pct,
+            "regime": self.regime,
+            "direction_score": self.direction_score,
+            "momentum_12m": self.momentum_12m,
+            "vol": self.vol,
+            "max_drawdown": self.max_drawdown,
+            "current_drawdown": self.current_drawdown,
+            "sharpe": self.sharpe,
+            "decision_source": self.decision_source,
+            "reason": self.reason,
+            "risk_hits": list(self.risk_hits),
+            "friction_held": self.friction_held,
+        }
+
+
+@dataclass
 class RebalanceSuggestion:
     """调仓建议"""
     fund_code: str

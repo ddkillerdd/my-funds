@@ -238,7 +238,12 @@ class AdvisorService:
     # ═══════════════════════════════════════════════════
 
     def _extract_actions(self, report: AnalysisReport) -> list[dict]:
-        """从报告提取动作列表（含方向、调仓幅度、建议时净值）。"""
+        """从报告提取动作列表（RFC-014 单一权威：per-fund PositionAction）。
+
+        动作唯一来源 = 每只基金 debate_summary.action 的 PositionAction。
+        组合层 rebalance_suggestions 不再作为操作动作来源（只作组合诊断参考区），
+        根治历史「actions 与 holdings_health 互相矛盾」的根因。
+        """
         # fund_code -> nav at advice (from ground_truth / fund info)
         nav_by_code: dict[str, Decimal] = {}
         qi_map = getattr(report, "quant_map", None) or {}
@@ -249,49 +254,57 @@ class AdvisorService:
                     nav_by_code[code] = Decimal(str(navs[-1].value))
 
         actions = []
-        if report.portfolio_diagnosis:
-            pd = report.portfolio_diagnosis
-            for rs in pd.rebalance_suggestions:
-                fund_name = rs.fund_code
-                for fd in report.per_fund_diagnosis:
-                    if fd.fund_code == rs.fund_code:
-                        fund_name = fd.fund_name
-                        break
-                actions.append({
-                    "fund_code": rs.fund_code,
-                    "fund_name": fund_name,
-                    "action": rs.action,
-                    "priority": "medium",
-                    "reason": rs.reason,
-                    "change_pct": rs.change_pct,
-                    "expected_effect": f"调整 {rs.change_pct:+.1f}%, 目标占比 {rs.target_ratio:.1f}%",
-                    # RFC-013: 量化决策元数据（若 rebalance 源缺失则为 None，由 per-fund 兜底）
-                    "decision_source": rs.decision_source if hasattr(rs, "decision_source") else "rebalance",
-                    "regime": rs.regime if hasattr(rs, "regime") else None,
-                    "note": rs.note if hasattr(rs, "note") else None,
-                })
-        suggested_codes = {a["fund_code"] for a in actions}
         for fd in report.per_fund_diagnosis:
-            if fd.fund_code not in suggested_codes and fd.debate_summary:
-                ds = fd.debate_summary
-                a_dict = ds.action if isinstance(ds.action, dict) else {}
+            ds = fd.debate_summary
+            if not ds:
+                # 无 debate_summary 时给安全兜底（应极罕见）
                 actions.append({
                     "fund_code": fd.fund_code,
                     "fund_name": fd.fund_name,
-                    "action": a_dict.get("type", "hold") if a_dict else "hold",
+                    "action": "hold",
+                    "action_label": "持有",
                     "priority": "low",
-                    "reason": a_dict.get("reasoning", "") if a_dict else "",
-                    "expected_effect": "维持当前配置",
-                    # RFC-013: 量化决策源/牛熊状态/调仓幅度/冲突标注 一并透传到 actions
-                    "decision_source": a_dict.get("decision_source"),
-                    "regime": a_dict.get("regime"),
-                    "change_pct": a_dict.get("change_pct"),
-                    "note": a_dict.get("note"),
-                    "trigger_conditions": a_dict.get("trigger_conditions", []),
+                    "reason": "暂无决策数据",
+                    "target_weight_pct": None,
+                    "change_weight_pp": None,
+                    "decision_source": "quant_primary",
+                    "regime": None,
+                    "nav": nav_by_code.get(fd.fund_code),
                 })
-        # attach nav for snapshot
-        for a in actions:
-            a["nav"] = nav_by_code.get(a["fund_code"])
+                continue
+
+            a_dict = ds.action if isinstance(ds.action, dict) else {}
+            is_position = "target_weight" in a_dict
+
+            # RFC-014 字段优先（PositionAction），旧 dict 回退
+            action = a_dict.get("action", a_dict.get("type", "hold")) or "hold"
+            action_label = a_dict.get("action_label") or {
+                "buy": "买入", "increase": "加仓", "hold": "持有",
+                "reduce": "减仓", "sell": "卖出",
+            }.get(action, action)
+            change_pct = a_dict.get("change_pct")
+            if not is_position:
+                change_pct = change_pct if change_pct is not None else 0.0
+
+            actions.append({
+                "fund_code": fd.fund_code,
+                "fund_name": fd.fund_name,
+                "action": action,
+                "action_label": action_label,
+                "priority": "high" if action in ("sell", "buy") else "medium" if action in ("reduce", "increase") else "low",
+                "reason": a_dict.get("reason", a_dict.get("reasoning", "") or ""),
+                # RFC-014: 目标仓位/变化
+                "current_weight": a_dict.get("current_weight"),
+                "target_weight": a_dict.get("target_weight"),
+                "target_weight_pct": a_dict.get("target_weight_pct"),
+                "change_weight_pp": a_dict.get("change_weight_pp"),
+                "change_pct": change_pct,
+                "regime": a_dict.get("regime"),
+                "decision_source": a_dict.get("decision_source", "quant_primary"),
+                "note": a_dict.get("note"),
+                "trigger_conditions": a_dict.get("trigger_conditions", []),
+                "nav": nav_by_code.get(fd.fund_code),
+            })
         return actions
 
     def _report_to_api_json(self, report: AnalysisReport, t0: float) -> dict:
@@ -349,7 +362,15 @@ class AdvisorService:
                 "health_score": ds.health_score if ds else 50,
                 "health_diagnosis": ds.health_label if ds else "",
                 "concerns": "; ".join(clean_risks) if ds else "",
-                "suggestion": ds.action.get("type", "hold") if ds and ds.action else "hold",
+                # RFC-014: 统一读 PositionAction（与 actions[] 同源），附中文标签
+                "suggestion": (ds.action.get("action", ds.action.get("type", "hold"))
+                                if ds and ds.action else "hold"),
+                "suggestion_label": (ds.action.get("action_label")
+                                      or {"buy": "买入", "increase": "加仓", "hold": "持有",
+                                          "reduce": "减仓", "sell": "卖出"}.get(
+                                              ds.action.get("action", "hold"), "持有")
+                                      if ds and ds.action else "持有"),
+                "target_weight_pct": ds.action.get("target_weight_pct") if ds and ds.action else None,
                 "data_citations": [],
                 # v3 新增字段
                 "v3_consensus": ds.consensus_label if ds else "",

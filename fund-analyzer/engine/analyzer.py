@@ -76,6 +76,7 @@ from .decision import (
     score_views_quant,
     deterministic_action,
     merge_with_llm_explanation,
+    build_position_action,
     detect_regime as _detect_regime,
 )
 
@@ -625,9 +626,11 @@ class Analyzer:
         debate_fallback = self.llm.config.model_assignments.get("risk", "nvidia/nvidia-nemotron-nano-9b-v2")
         model_sources = model_sources or {}
 
-        # RFC-013: 动作确定性收敛——先算量化动作（regime-aware，幂等），LLM 只做解读。
+        # RFC-013/RFC-014: 动作确定性收敛——先算量化动作（regime-aware，幂等），
+        # LLM 只做解读。RFC-014 主路径升级为 PositionAction（含 target_weight 目标仓位）。
         regime = self._detect_fund_regime(qi)
-        quant_action = deterministic_action(regime, qi)
+        current_weight = float(qi.mv_ratio or 0.0)
+        quant_action = build_position_action(qi, regime, current_weight)
 
         try:
             # Build model-source-enriched prompt

@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_TO: str = ""
 
+    # 决策引擎 (RFC-014): L2 波动率目标 + L3 风控阈值
+    # 通过 .env 覆盖, 不改代码即可调参
+    TARGET_VOL: float = 0.15          # 目标年化波动率(十进制), 进取0.20/保守0.10
+    DD_HARD_STOP_PCT: float = 25.0    # 回撤>25% 清仓 (R1)
+    DD_REDUCE_LO_PCT: float = 15.0    # 回撤15-25% 减仓 (R2)
+    VOL_HIGH_CAP_PCT: float = 60.0    # 年化vol>60% 压仓 (R3)
+    CONC_CAP: float = 0.50            # 单基目标权重上限 (R4)
+    BEAR_CAP: float = 0.30            # 熊市防御上限 (R5)
+    FRICTION_BAND_PP: float = 5.0     # 换手触发带(百分点, R6)
+
     @property
     def DATABASE_URL(self) -> str:
         return (

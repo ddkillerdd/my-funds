@@ -286,11 +286,12 @@ def _base_confidence(regime: str, action_type: str) -> float:
 # ============================================================
 
 def merge_with_llm_explanation(quant_action: Dict, llm_debate) -> Dict:
-    """把量化动作与 LLM 解读合并。
+    """把量化动作与 LLM 解读合并（RFC-014 优先，兼容 RFC-006）。
 
-    - 动作字段（type/change_pct）以量化结果为准，LLM 无法覆盖
-    - LLM 原本的 action.type/reasoning 降级为附注 note（若与量化冲突）
-    - 返回最终 action dict（写入报告）
+    - 动作字段（action/target_weight）以量化 PositionAction 为准，LLM 无法覆盖
+    - 兼容旧路由：若 quant_action 是 RFC-006 老 dict（type/reasoning），沿用旧合并
+    - LLM 解读文案仅附加到 reason/reasoning，永不改动作字段
+    - 冲突仅作 note 标注
     """
     merged = dict(quant_action)
     merged["decision_source"] = "quant_primary"
@@ -313,17 +314,48 @@ def merge_with_llm_explanation(quant_action: Dict, llm_debate) -> Dict:
         llm_type = getattr(llm_action, "type", None)
         llm_reasoning = getattr(llm_action, "reasoning", "") or ""
 
-    # LLM 解释文案（若有）补充进 reasoning
-    if llm_reasoning and llm_reasoning not in merged.get("reasoning", ""):
-        merged["reasoning"] = f"{merged['reasoning']}｜LLM解读：{llm_reasoning}"
+    # RFC-014: 是否 PositionAction dict（含 target_weight）
+    is_position = "action" in merged and "target_weight" in merged
 
-    # 冲突检测：LLM 方向与量化不一致 → 附注标注（不改变动作）
+    # LLM 解释文案补进 reason（PositionAction）或 reasoning（旧 dict）
+    if llm_reasoning:
+        field = "reason" if is_position else "reasoning"
+        cur = merged.get(field, "") or ""
+        if llm_reasoning not in cur:
+            merged[field] = f"{cur}｜LLM解读：{llm_reasoning}"
+            if not is_position:
+                merged["reasoning"] = merged[field]
+
+    # 冲突检测：LLM 方向与量化不一致 → 附注（不改变动作）
     if llm_type:
-        llm_canon = _canonical(str(llm_type).lower())
-        quant_canon = merged["type"]
-        if llm_canon != quant_canon:
-            merged["note"] = (f"LLM 原判 {llm_canon} 与量化决策 {quant_canon} 冲突，"
-                              f"已按量化结果处理（防 LLM 随机摆荡）。")
+        if is_position:
+            quant_action_v = merged.get("action")
+            llm_canon = _canonical(str(llm_type).lower())
+            # RFC-014 五档 vs 旧六档: 统一映射后比较
+            q_norm = {"sell": "sell", "reduce": "reduce", "hold": "hold",
+                      "watch": "hold", "buy": "add", "increase": "add"}.get(
+                          quant_action_v, quant_action_v)
+            l_norm = {"sell": "sell", "reduce": "reduce", "hold": "hold",
+                      "watch": "hold", "buy": "add", "increase": "add"}.get(
+                          llm_canon, llm_canon)
+            if l_norm != q_norm:
+                merged["note"] = (
+                    f"LLM 原判 {llm_canon} 与量化决策 {quant_action_v} 冲突，"
+                    f"已按量化结果处理（防 LLM 随机摆荡）。"
+                )
+        else:
+            llm_canon = _canonical(str(llm_type).lower())
+            quant_canon = merged.get("type")
+            if quant_canon and llm_canon != quant_canon:
+                merged["note"] = (
+                    f"LLM 原判 {llm_canon} 与量化决策 {quant_canon} 冲突，"
+                    f"已按量化结果处理（防 LLM 随机摆荡）。"
+                )
+
+    # RFC-014 PositionAction: 补全中文标签（若未设置）
+    if is_position and not merged.get("action_label"):
+        merged["action_label"] = ACTION_LABELS.get(merged.get("action"), "持有")
+
     return merged
 
 
@@ -348,3 +380,202 @@ def summarize_regime(regimes: Dict[str, str]) -> Dict:
         regime = "sideways"
         label = "市场震荡/分歧"
     return {"regime": regime, "label": label, "bull": bulls, "bear": bears, "total": len(vals)}
+
+
+# ============================================================
+#  RFC-014 盈利导向决策引擎 v2（Signal→Position→Risk 三层闭环）
+#  ============================================================
+#  - L1 方向信号（动量为主 + 均线 + RSI 修正）→ direction_score
+#  - L2 仓位映射（波动率目标 vol targeting）→ 目标权重
+#  - L3 风控层（回撤硬止损/波动上限/集中度/熊市防御/换手触发带）强制覆盖
+#  - 唯一权威动作结构 PositionAction：全量化、幂等、零 LLM
+#  - 旧的 deterministic_action 保留为数据不足时的内部兜底
+#  ============================================================
+
+# L2 波动率目标（默认 15%，可由 config 注入覆盖）
+DEFAULT_TARGET_VOL = 0.15
+# L3 风控阈值（默认）
+DD_HARD_STOP = 25.0        # R1 回撤>25% 清仓
+DD_REDUCE_LO = 15.0        # R2 回撤15-25% 减仓
+VOL_HIGH_CAP = 60.0        # R3 年化vol>60% 压仓
+CONC_CAP = 0.50            # R4 单基目标权重上限 50%
+BEAR_CAP = 0.30            # R5 熊市防御上限 30%
+FRICTION_BAND_PP = 5.0     # R6 换手触发带 5 个百分点
+BASE_WEIGHT = {"bull-ish": 0.80, "neutral": 0.50, "bear-ish": 0.25}
+ACTION_LABELS = {
+    "buy": "买入", "increase": "加仓", "hold": "持有",
+    "reduce": "减仓", "sell": "卖出",
+}
+
+
+def _f(qi, val):
+    """安全取可能为 None 的数值，返回 float。"""
+    try:
+        return float(val) if val is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def compute_direction(qi, regime: str) -> float:
+    """L1 方向信号 → direction_score ∈ [-1, +1]
+
+    子信号加权（实证依据见 RFC-014 §3.1）：
+      mom(0.50): 近1年收益, 有效(>0)才计正, 幅度限幅
+      ma (0.30): MA20 vs MA60 黄金/死叉/纠缠
+      rsi(0.20): RSI14 偏离 50（超买≥70、超卖≤30 修正）
+    """
+    # mom: 近1年收益 %（TSMOM 实证最强）
+    ret_1y = _f(qi, qi.returns.return_1y_pct if qi.returns else None)
+    mom = 0.0 if ret_1y == 0 else max(-1.0, min(1.0, ret_1y / 25.0))
+
+    # ma: MA20 vs MA60
+    ma_status = getattr(qi.trend, "ma_status", "unknown") if qi.trend else "unknown"
+    ma_map = {"above_all": 1.0, "above_short": 0.5, "mixed": 0.0,
+              "below_short": -0.5, "below_all": -1.0}
+    ma = ma_map.get(ma_status, 0.0)
+
+    # rsi: 偏离 50（超买降分防追高, 超卖适度看多反转）
+    rsi = _f(qi, qi.momentum.rsi_14 if qi.momentum else None)
+    if rsi == 0:
+        rsi_w = 0.0
+    elif rsi >= 70:
+        rsi_w = -0.5   # 超买, 防追高
+    elif rsi <= 30:
+        rsi_w = 0.3    # 超卖, 均值回归看多（轻）
+    elif 40 <= rsi <= 60:
+        rsi_w = 0.0
+    else:
+        rsi_w = (rsi - 50) / 100.0  # 中性带外轻微方向
+
+    score = 0.50 * mom + 0.30 * ma + 0.20 * rsi_w
+
+    # 熊市 regime 压制方向（防御）：市场级转熊则方向整体下调
+    if regime == "bear":
+        score = score * 0.6 - 0.2
+    elif regime == "bull":
+        score = score * 1.1 + 0.1
+
+    return max(-1.0, min(1.0, score))
+
+
+def _action_from_weights(target: float, current: float) -> str:
+    """由 target vs current 派生动作（目标是唯一因, 动作是果）。"""
+    if target <= 1e-6:
+        return "sell"
+    if target > current * 1.10:
+        return "buy"
+    if target > current:
+        return "increase"
+    if target < current * 0.90:
+        return "reduce"
+    return "hold"
+
+
+def build_position_action(qi, regime: str, current_weight: float,
+                          target_vol: float = DEFAULT_TARGET_VOL,
+                          friction_band_pp: float = FRICTION_BAND_PP) -> dict:
+    """RFC-014 总入口：L1 方向 → L2 波动率目标仓位 → L3 风控 → 唯一动作结构。
+
+    幂等、零 LLM 依赖。返回 dict（PositionAction.to_dict() 同构）。
+
+    Args:
+        qi: QuantIndicators
+        regime: "bull"|"bear"|"sideways"
+        current_weight: 当前权重(十进制, 0~1)
+        target_vol: 目标年化波动率(默认0.15)
+        friction_band_pp: 换手触发带(百分点, 默认5)
+    """
+    # L1 方向
+    direction = compute_direction(qi, regime)
+    if direction > 0.25:
+        bucket = "bull-ish"
+    elif direction < -0.25:
+        bucket = "bear-ish"
+    else:
+        bucket = "neutral"
+    base = BASE_WEIGHT[bucket]
+
+    # L2 波动率目标
+    vol = _f(qi, qi.risk.annual_volatility_pct if qi.risk else None)
+    if vol <= 1e-6:
+        target = base          # 无波动率数据, 用基准仓位
+        vol_fact = None
+    else:
+        target = base * (target_vol / (vol / 100.0))
+        vol_fact = target_vol / (vol / 100.0)
+
+    # 用 R5 判定需要 direction; 先统一 clamp 再走风控
+    target = max(min(target, 0.95), 0.05) if target > 0 else 0.0
+
+    # L3 风控
+    limited = _apply_risk_layers_for_direction(qi, regime, target, current_weight, direction)
+
+    # R6 换手触发带: |target-current| < band → 保持不动
+    friction_held = False
+    if abs((limited - current_weight) * 100) < friction_band_pp:
+        limited = current_weight
+        friction_held = True
+
+    target = max(min(limited, 0.95), 0.0)
+    action = _action_from_weights(target, current_weight)
+
+    # 因 R6 保持不动且原方向要减仓时, 动作统一为 hold
+    if friction_held:
+        action = "hold"
+
+    # 依据文字
+    reasons = []
+    risk_memo = {}
+    r1_hit = limited == 0.0
+    cur_dd = abs(_f(qi, qi.risk.current_drawdown_pct if qi.risk else None))
+    if r1_hit:
+        reasons.append(f"回撤{cur_dd:.0f}%超阈值清仓")
+    elif vol_fact is not None:
+        reasons.append(f"波动率目标{target_vol*100:.0f}%→仓位{target*100:.0f}%")
+    if friction_held:
+        reasons.append(f"距目标<{friction_band_pp:.0f}pp, 保持不动")
+
+    return {
+        "fund_code": qi.fund_code,
+        "action": action,
+        "action_label": ACTION_LABELS.get(action, "持有"),
+        "current_weight": round(current_weight, 4),
+        "target_weight": round(target, 4),
+        "change_weight_pp": round((target - current_weight) * 100, 2),
+        "target_weight_pct": round(target * 100, 1),
+        "regime": regime,
+        "direction_score": round(direction, 3),
+        "momentum_12m": round(_f(qi, qi.returns.return_1y_pct if qi.returns else None), 2),
+        "vol": round(vol, 1),
+        "max_drawdown": round(-abs(_f(qi, qi.risk.max_drawdown_pct if qi.risk else None)), 1),
+        "current_drawdown": round(-cur_dd, 1),
+        "sharpe": round(_f(qi, qi.efficiency.sharpe_ratio if qi.efficiency else None), 2),
+        "decision_source": "quant_primary",
+        "reason": "".join(reasons) if reasons else "信号中性, 维持当前仓位",
+        "risk_hits": [],
+        "friction_held": friction_held,
+    }
+
+
+def _apply_risk_layers_for_direction(qi, regime, target, current_weight, direction):
+    """L3 风控层执行（R1..R5），返回修正后 target。"""
+    hits: List[str] = []
+    cur_dd = abs(_f(qi, qi.risk.current_drawdown_pct if qi.risk else None))
+    vol = _f(qi, qi.risk.annual_volatility_pct if qi.risk else None)
+
+    # R1
+    if cur_dd > DD_HARD_STOP:
+        return 0.0
+    # R2
+    if DD_REDUCE_LO < cur_dd <= DD_HARD_STOP and current_weight > target * 1.5:
+        target = target * 0.5
+    # R3
+    if vol > VOL_HIGH_CAP:
+        target = min(target, 0.30)
+    # R4
+    if target > CONC_CAP:
+        target = CONC_CAP
+    # R5
+    if regime == "bear":
+        target = min(target, BEAR_CAP)
+    return max(0.0, target)

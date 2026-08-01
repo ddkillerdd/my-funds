@@ -189,7 +189,12 @@
                     <span class="concern-text" v-if="h.concerns">{{ cleanConcerns(h.concerns) }}</span>
                   </el-col>
                   <el-col :span="6">
-                    <span class="suggestion-text" v-if="h.suggestion">{{ actionLabel(h.suggestion) }}</span>
+                    <span class="suggestion-text" v-if="h.suggestion_label || h.suggestion">
+                      {{ h.suggestion_label || actionLabel(h.suggestion) }}
+                      <template v-if="h.target_weight_pct != null">
+                        <span class="target-wt">目标{{ h.target_weight_pct }}%</span>
+                      </template>
+                    </span>
                   </el-col>
                 </el-row>
               </div>
@@ -218,9 +223,10 @@
                   <div class="action-item">
                     <div class="action-header">
                       <strong>{{ a.fund_name }}</strong>
-                      <span class="action-badge">{{ actionLabel(a.action) }}</span>
+                      <span class="action-badge">{{ a.action_label || actionLabel(a.action) }}</span>
                       <el-tag v-if="a.priority === 'high'" type="danger" size="small">高优</el-tag>
                       <el-tag v-else-if="a.priority === 'medium'" type="warning" size="small">中</el-tag>
+                      <el-tag v-if="a.target_weight_pct != null" type="info" size="small">目标 {{ a.target_weight_pct }}%</el-tag>
                     </div>
                     <p class="action-reason">{{ cleanEvidence(a.reason) }}</p>
                   </div>
@@ -377,10 +383,12 @@ function actionType(action) {
 
 function actionLabel(action) {
   const labels = {
+    buy: '买入',
     add: '加仓',
-    increase: '增持',
+    increase: '加仓',
     reduce: '减仓',
-    decrease: '减持',
+    decrease: '减仓',
+    sell: '卖出',
     hold: '持有',
     watch: '关注',
   }
@@ -677,8 +685,15 @@ onMounted(async () => {
 }
 
 .suggestion-text {
+
   color: #409eff;
   font-size: 13px;
+}
+
+.target-wt {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 6px;
 }
 
 .action-list {

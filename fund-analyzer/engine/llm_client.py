@@ -569,13 +569,17 @@ def normalize_action(action) -> Dict[str, Any]:
     Ensure an action (dict or absent) always contains the RFC-006 fields:
     type / confidence / reasoning / change_pct / trigger_conditions / target_ratio_pct.
 
-    Acts as a safety net when the LLM omits the new fields, preserving
-    backward compatibility with old dict-based reports in the DB.
+    RFC-014: 兼容 PositionAction dict（action/target_weight/... 新字段）。
+    新字段保留, 老字段补齐作为超集, 保证历史报告与老消费方不破。
     """
     if isinstance(action, dict):
         act = dict(action)
     else:
         act = {}
+
+    # RFC-014: action 字段同步到 type（PositionAction → 老消费方）
+    if "action" in act and "type" not in act:
+        act["type"] = act["action"]
 
     act.setdefault("type", "hold")
     act.setdefault("confidence", 0.5)
@@ -585,6 +589,11 @@ def normalize_action(action) -> Dict[str, Any]:
     act["trigger_conditions"] = act.get("trigger_conditions") or []
     if "target_ratio_pct" not in act:
         act["target_ratio_pct"] = None
+
+    # RFC-014: 目标仓位派生变化百分点（若老字段缺失）
+    if act.setdefault("target_weight_pct", act.get("target_ratio_pct")) is not None \
+            and "change_weight_pp" not in act:
+        act["change_weight_pp"] = round((act["target_weight_pct"] - (act.get("current_weight") or 0.0) * 100), 2)
 
     # Sanity: change_pct sign must match action type
     t = act["type"]
