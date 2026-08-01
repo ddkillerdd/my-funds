@@ -49,8 +49,23 @@ class TestParseJsonResponse:
         assert parse_json_response(None) is None
 
     def test_array_json(self):
-        data = parse_json_response('[1, 2, 3]')
-        assert data == [1, 2, 3]
+        # 纯标量数组对 .get() 调用方无意义 → 返回 None（防止下游 AttributeError）
+        assert parse_json_response('[1, 2, 3]') is None
+
+    def test_array_wrapping_object(self):
+        # LLM 顶层返回数组包裹对象的行为（portportfolio 场景）→ 取第一个 dict
+        data = parse_json_response('[{"overall_health_score": 70, "health_label": "good"}]')
+        assert data == {"overall_health_score": 70, "health_label": "good"}
+
+    def test_array_of_mixed(self):
+        # 数组内非 dict 元素跳过，取第一个 dict
+        data = parse_json_response('[[1,2], {"a": 1}]')
+        assert data == {"a": 1}
+
+    def test_array_of_json_strings(self):
+        data = parse_json_response('[\"{\\\"a\\\":1}\" ]')
+        # 数组内元素可能是 JSON 字符串，也应解析取 dict
+        assert data is not None and data.get("a") == 1
 
 
 class TestValidateDiagnosisJson:

@@ -202,20 +202,40 @@ def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
     - JSON inside ```json ... ```
     - JSON inside ``` ... ```
     - JSON with trailing text
+    Ensures the returned value is a dict (LLM sometimes returns a top-level array;
+    in that case we take the first dict element so callers can safely .get()).
     """
+
+    def _coerce(value):
+        # JSON string double-wrap
+        if isinstance(value, str):
+            try:
+                return _coerce(json.loads(value))
+            except (json.JSONDecodeError, TypeError):
+                return None
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list):
+            # LLM sometimes wraps the object in an array: [{...}] → take first dict
+            for item in value:
+                if isinstance(item, dict):
+                    return item
+                if isinstance(item, str):
+                    try:
+                        d = json.loads(item)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(d, dict):
+                        return d
+            return None
+        return None
+
     if not raw:
         return None
 
     # Try pure JSON first
     try:
-        parsed = json.loads(raw)
-        # Nemotron sometimes wraps JSON in a JSON string: "{...}"
-        if isinstance(parsed, str):
-            try:
-                parsed = json.loads(parsed)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return parsed
+        return _coerce(json.loads(raw))
     except json.JSONDecodeError:
         pass
 
@@ -229,7 +249,7 @@ def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
         matches = re.findall(pattern, raw)
         for match in matches:
             try:
-                return json.loads(match)
+                return _coerce(json.loads(match))
             except json.JSONDecodeError:
                 continue
 
@@ -278,7 +298,7 @@ def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
     
     if best_result is not None:
         logger.info(f"Extracted JSON with {best_key_count} top-level keys from response (non-pure JSON)")
-        return best_result
+        return _coerce(best_result)
 
     logger.warning(f"Failed to parse JSON from response: {raw[:200]}...")
     return None
