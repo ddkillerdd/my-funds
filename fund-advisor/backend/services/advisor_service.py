@@ -293,12 +293,15 @@ class AdvisorService:
                 "action_label": action_label,
                 "priority": "high" if action in ("sell", "buy") else "medium" if action in ("reduce", "increase") else "low",
                 "reason": a_dict.get("reason", a_dict.get("reasoning", "") or ""),
-                # RFC-014: 目标仓位/变化
+                # RFC-014: 目标仓位/变化 + 绝对金额(元)
                 "current_weight": a_dict.get("current_weight"),
                 "target_weight": a_dict.get("target_weight"),
                 "target_weight_pct": a_dict.get("target_weight_pct"),
                 "change_weight_pp": a_dict.get("change_weight_pp"),
                 "change_pct": change_pct,
+                "target_amount": a_dict.get("target_amount"),
+                "current_amount": a_dict.get("current_amount"),
+                "action_amount": a_dict.get("action_amount"),
                 "regime": a_dict.get("regime"),
                 "decision_source": a_dict.get("decision_source", "quant_primary"),
                 "note": a_dict.get("note"),
@@ -371,6 +374,8 @@ class AdvisorService:
                                               ds.action.get("action", "hold"), "持有")
                                       if ds and ds.action else "持有"),
                 "target_weight_pct": ds.action.get("target_weight_pct") if ds and ds.action else None,
+                "action_amount": ds.action.get("action_amount") if ds and ds.action else None,
+                "target_amount": ds.action.get("target_amount") if ds and ds.action else None,
                 "data_citations": [],
                 # v3 新增字段
                 "v3_consensus": ds.consensus_label if ds else "",

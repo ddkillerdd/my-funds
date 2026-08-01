@@ -145,3 +145,37 @@ def test_action_label_valid():
         act = build_position_action(qi, regime, current_weight=0.40)
         assert act["action"] in ACTION_LABELS
         assert act["action_label"] == ACTION_LABELS[act["action"]]
+
+
+# ---------- 绝对操作金额 (RFC-014 金额扩展) ----------
+
+def test_action_amount_with_total_mv():
+    """传入 total_mv 时输出绝对操作金额, 且金额==总市值×权重差。"""
+    qi = _make_qi(vol=78.0)  # 高波动, target 被压到 ~15%
+    act = build_position_action(qi, "sideways", current_weight=0.50, total_mv=100000)
+    assert act["action_amount"] is not None
+    # 金额自洽: target_amount ≈ total_mv × target_weight (容忍舍入)
+    assert act["target_amount"] == pytest.approx(100000 * act["target_weight"], rel=0.01)
+    assert act["current_amount"] == pytest.approx(100000 * 0.50, abs=1)
+    # 高波动压仓 → 应减仓 → action_amount 为负
+    assert act["action_amount"] < 0
+    assert act["action"] == "reduce"
+
+
+def test_action_amount_zero_when_no_total_mv():
+    """未传 total_mv 时(默认0) 金额字段为 None, 不报错。"""
+    qi = _make_qi(vol=20.0, cur_dd=5.0)
+    act = build_position_action(qi, "sideways", current_weight=0.40)
+    assert act["action_amount"] is None
+    assert act["target_amount"] is None
+    assert act["current_amount"] is None
+
+
+def test_action_amount_money_sets():
+    """金额正负与动作方向一致: buy→正, sell→负。"""
+    qi_buy = _make_qi(vol=8.0, trend_dir="up", ret_1y=25.0, cur_dd=2.0)  # 低波偏多
+    qi_sell = _make_qi(cur_dd=32.0)  # 回撤>25% → sell
+    b = build_position_action(qi_buy, "bull", current_weight=0.10, total_mv=100000)
+    s = build_position_action(qi_sell, "sideways", current_weight=0.60, total_mv=100000)
+    assert b["action"] == "buy" and b["action_amount"] > 0
+    assert s["action"] == "sell" and s["action_amount"] < 0

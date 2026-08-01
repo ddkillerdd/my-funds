@@ -229,6 +229,12 @@
                       <el-tag v-if="a.target_weight_pct != null" type="info" size="small">目标 {{ a.target_weight_pct }}%</el-tag>
                     </div>
                     <p class="action-reason">{{ cleanEvidence(a.reason) }}</p>
+                    <!-- RFC-014: 绝对操作金额 -->
+                    <p v-if="a.action_amount != null && a.action_amount !== 0" class="action-amount" :class="a.action_amount > 0 ? 'amt-in' : 'amt-out'">
+                      {{ a.action_amount > 0 ? '▶ $' : '◀ $' }} {{ fmtMoney(Math.abs(a.action_amount)) }}
+                      <template v-if="a.current_amount != null">（现持 {{ fmtMoney(a.current_amount) }} → 目标 {{ fmtMoney(a.target_amount) }}）</template>
+                    </p>
+                    <p v-else-if="a.action_amount === 0" class="action-amount amt-zero">无需资金变动</p>
                   </div>
                 </el-timeline-item>
               </el-timeline>
@@ -393,6 +399,11 @@ function actionLabel(action) {
     watch: '关注',
   }
   return labels[action] || action
+}
+
+function fmtMoney(v) {
+  if (v == null || isNaN(v)) return '-'
+  return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' 元'
 }
 
 function cleanConcerns(text) {
@@ -694,6 +705,25 @@ onMounted(async () => {
   color: #909399;
   font-size: 12px;
   margin-left: 6px;
+}
+
+.action-amount {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.amt-in {
+  color: #f56c6c;
+}
+
+.amt-out {
+  color: #67c23a;
+}
+
+.amt-zero {
+  color: #909399;
+  font-weight: 400;
 }
 
 .action-list {

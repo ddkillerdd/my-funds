@@ -298,6 +298,7 @@ class Analyzer:
                     fd.value_view,
                     fd.technical_view,
                     model_sources=model_sources,
+                    total_mv=float(ground.get("total_market_value", 0) or 0),
                 )
             else:
                 # All views failed → pure calculation fallback
@@ -616,6 +617,7 @@ class Analyzer:
         value: ValueViewDiagnosis,
         technical: TechnicalViewDiagnosis,
         model_sources: Optional[Dict[str, str]] = None,
+        total_mv: float = 0.0,
     ) -> DebateSummary:
         """Run debate synthesis with model-source-aware prompt.
 
@@ -630,7 +632,7 @@ class Analyzer:
         # LLM 只做解读。RFC-014 主路径升级为 PositionAction（含 target_weight 目标仓位）。
         regime = self._detect_fund_regime(qi)
         current_weight = float(qi.mv_ratio or 0.0)
-        quant_action = build_position_action(qi, regime, current_weight)
+        quant_action = build_position_action(qi, regime, current_weight, total_mv=total_mv)
 
         try:
             # Build model-source-enriched prompt

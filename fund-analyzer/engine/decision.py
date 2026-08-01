@@ -473,7 +473,8 @@ def _action_from_weights(target: float, current: float) -> str:
 
 def build_position_action(qi, regime: str, current_weight: float,
                           target_vol: float = DEFAULT_TARGET_VOL,
-                          friction_band_pp: float = FRICTION_BAND_PP) -> dict:
+                          friction_band_pp: float = FRICTION_BAND_PP,
+                          total_mv: float = 0.0) -> dict:
     """RFC-014 总入口：L1 方向 → L2 波动率目标仓位 → L3 风控 → 唯一动作结构。
 
     幂等、零 LLM 依赖。返回 dict（PositionAction.to_dict() 同构）。
@@ -484,6 +485,7 @@ def build_position_action(qi, regime: str, current_weight: float,
         current_weight: 当前权重(十进制, 0~1)
         target_vol: 目标年化波动率(默认0.15)
         friction_band_pp: 换手触发带(百分点, 默认5)
+        total_mv: 组合总市值(元)。>0 时额外计算绝对操作金额 action_amount。
     """
     # L1 方向
     direction = compute_direction(qi, regime)
@@ -535,6 +537,11 @@ def build_position_action(qi, regime: str, current_weight: float,
     if friction_held:
         reasons.append(f"距目标<{friction_band_pp:.0f}pp, 保持不动")
 
+    # 绝对操作金额（组合总市值已知时）
+    current_amount = total_mv * current_weight if total_mv > 0 else None
+    target_amount = total_mv * target if total_mv > 0 else None
+    change_amount = total_mv * (target - current_weight) if total_mv > 0 else None
+
     return {
         "fund_code": qi.fund_code,
         "action": action,
@@ -543,6 +550,10 @@ def build_position_action(qi, regime: str, current_weight: float,
         "target_weight": round(target, 4),
         "change_weight_pp": round((target - current_weight) * 100, 2),
         "target_weight_pct": round(target * 100, 1),
+        # 绝对金额（元）: 该持有的金额 / 现值 / 需操作的金额(正加负减)
+        "target_amount": round(target_amount, 2) if target_amount is not None else None,
+        "current_amount": round(current_amount, 2) if current_amount is not None else None,
+        "action_amount": round(change_amount, 2) if change_amount is not None else None,
         "regime": regime,
         "direction_score": round(direction, 3),
         "momentum_12m": round(_f(qi, qi.returns.return_1y_pct if qi.returns else None), 2),
