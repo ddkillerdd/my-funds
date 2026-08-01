@@ -631,7 +631,9 @@ class Analyzer:
         # RFC-013/RFC-014: 动作确定性收敛——先算量化动作（regime-aware，幂等），
         # LLM 只做解读。RFC-014 主路径升级为 PositionAction（含 target_weight 目标仓位）。
         regime = self._detect_fund_regime(qi)
-        current_weight = float(qi.mv_ratio or 0.0)
+        # mv_ratio 是百分数(如 31.5=31.5%), build_position_action 需要十进制(0~1)
+        mv_pct = float(qi.mv_ratio or 0.0)
+        current_weight = mv_pct / 100.0
         quant_action = build_position_action(qi, regime, current_weight, total_mv=total_mv)
 
         try:
