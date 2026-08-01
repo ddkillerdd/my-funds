@@ -131,3 +131,50 @@ class TestSerialization:
         parsed = json.loads(json_str)
         assert "generated_at" in parsed
         assert "ground_truth" in parsed
+
+
+class TestPortfolioSynthesisQuant:
+    """组合诊断纯量化（B 方案）行为测试：字段完整性 + 调仓建议阈值门控。"""
+
+    def _analyzer(self):
+        config = LLMConfig(api_base="http://localhost/v1", api_key="test")
+        return Analyzer(config)
+
+    def _mk_history(self, dist):
+        from engine.models import PortfolioGroundTruth, ConcentrationData, EfficientFrontierData
+        return PortfolioGroundTruth(
+            total_market_value=100000, total_pnl_pct=1.56, holding_count=4, active_count=4,
+            overall_data_quality="good",
+            concentration=ConcentrationData(hhi_index=0.33, hhi_label="moderate",
+                                            top1_pct=36.0, top3_pct=99.7),
+            efficient_frontier=EfficientFrontierData(
+                simulations=2000,
+                optimal_sharpe_weights={"000311": 0.5, "161725": 0.18, "588760": 0.17, "018044": 0.15},
+                current_position_risk=0.22, current_position_return=0.12,
+                distance_to_frontier_pct=dist,
+                position_quality="suboptimal" if dist > 3 else "near_optimal",
+            ),
+        )
+
+    def test_health_label_is_quant_label_not_empty(self):
+        a = self._analyzer()
+        pd = a._portfolio_synthesis(PortfolioInput(holdings=[]), [], [], self._mk_history(1.0))
+        # B 方案：量化标签，绝不是空 / 无法评估
+        assert pd.overall_assessment if hasattr(pd, "overall_assessment") else True
+        assert pd.health_label not in ("", None)
+        assert isinstance(pd.overall_health_score, int)
+        assert pd.concentration_risk.get("detail")
+
+    def test_rebalance_empty_when_near_frontier(self):
+        """接近有效前沿（偏离 1%）不应生成 rebalance 建议 → per-fund 决策主导。"""
+        a = self._analyzer()
+        pd = a._portfolio_synthesis(PortfolioInput(holdings=[]), [], [], self._mk_history(1.0))
+        assert pd.rebalance_suggestions == []
+        assert pd.efficient_frontier_analysis.get("rebalance_direction") == "维持现状"
+
+    def test_rebalance_present_when_far_from_frontier(self):
+        """显著偏离有效前沿（偏离 15.8%）应生成 rebalance 建议。"""
+        a = self._analyzer()
+        pd = a._portfolio_synthesis(PortfolioInput(holdings=[]), [], [], self._mk_history(15.8))
+        assert len(pd.rebalance_suggestions) > 0
+        assert pd.efficient_frontier_analysis.get("rebalance_direction") != "维持现状"

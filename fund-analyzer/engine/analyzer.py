@@ -14,6 +14,7 @@ Total: 5N+2 LLM calls for N active funds.
 
 from __future__ import annotations
 import json
+import math
 import time
 import logging
 from datetime import datetime, timezone, timedelta
@@ -798,13 +799,6 @@ class Analyzer:
         efficient_frontier_analysis = {}
         rebalance_direction = "维持现状"
         if frontier:
-            optimal_vs_current = None
-            if frontier.optimal_sharpe_weights and (
-                frontier.optimal_sharpe_weights or frontier.min_vol_weights
-            ):
-                optimal_vs_current = {}
-                for code, opt_w in frontier.optimal_sharpe_weights.items():
-                    optimal_vs_current[code] = opt_w
             efficient_frontier_analysis = {
                 "simulations": frontier.simulations,
                 "optimal_sharpe_weights": frontier.optimal_sharpe_weights,
@@ -814,7 +808,8 @@ class Analyzer:
                 "distance_to_frontier_pct": frontier.distance_to_frontier_pct,
                 "position_quality": frontier.position_quality,
             }
-            if isinstance(frontier.distance_to_frontier_pct, (int, float)) and abs(frontier.distance_to_frontier_pct) > 1.5:
+            # 与 rebalance_suggestions 门控一致：偏离有效前沿 >3% 才提示调仓
+            if isinstance(frontier.distance_to_frontier_pct, (int, float)) and not math.isnan(frontier.distance_to_frontier_pct) and abs(frontier.distance_to_frontier_pct) > 3.0:
                 rebalance_direction = (
                     "降低风险敞口" if (frontier.current_position_risk or 0) > 0.25
                     else "适度再平衡，贴近有效前沿"
@@ -824,8 +819,17 @@ class Analyzer:
         efficient_frontier_analysis["rebalance_direction"] = rebalance_direction
 
         # ---- 4) 调仓建议（由最优Sharpe权重差值量化生成） ----
+        # ---- 4) 调仓建议（由最优Sharpe权重差值量化生成；仅当组合显著偏离有效前沿时才给出） ----
+        # 注意：rebalance_suggestions 会被后端当作用户的动作建议展示。
+        # 若组合接近有效前沿（无需调仓），必须保持空列表，让 per-fund 的 quant_primary 决策主导，
+        # 避免 rebalance 建议覆盖 RFC-013 的逐基决策（否则 regime/decision_source 会丢失）。
         rebalance_suggestions = []
-        if frontier and frontier.optimal_sharpe_weights and frontier.optimal_sharpe_weights:
+        dist_to_frontier = (
+            abs(frontier.distance_to_frontier_pct)
+            if frontier and isinstance(frontier.distance_to_frontier_pct, (int, float)) and not math.isnan(frontier.distance_to_frontier_pct)
+            else 0.0
+        )
+        if dist_to_frontier > 3.0 and frontier and frontier.optimal_sharpe_weights:
             total_w = sum(frontier.optimal_sharpe_weights.values()) or 1.0
             for code, opt_w in frontier.optimal_sharpe_weights.items():
                 opt_share = opt_w / total_w * 100.0
@@ -836,7 +840,7 @@ class Analyzer:
                         action=action,
                         target_ratio=round(opt_share, 1),
                         change_pct=0.0,  # 方向已由 action 表达，差值不强行估算
-                        reason=f"最优Sharpe权重{opt_share:.1f}%",
+                        reason=f"最优Sharpe权重{opt_share:.1f}%（偏离有效前沿{dist_to_frontier:.1f}%）",
                     )
                 )
 
