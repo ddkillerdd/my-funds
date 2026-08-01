@@ -1,8 +1,32 @@
 # RFC-016 · 组合策略回测引擎 `engine/simulator.py`
 
-> 状态: 已实现 (2026-08-02) · 模块: `fund-analyzer/engine/simulator.py`
-> 目的: 为分析模块提供一个**可复用、可进化**的历史回测/模拟层，验证决策引擎
+> 状态: 已实现 (2026-08-02) · 类型: **与分析模块平级的一等公民**
+> 模块: `fund-analyzer/engine/simulator.py` / 报告模型在 `engine/models.py` / 已导出
+> 目的: 为分析模块提供一个**可复用、可进化、能出报告**的历史回测/模拟层，验证决策引擎
 > (`decision.py` + `quant.py` + `analyzer`) 是否真能带来盈利。零 LLM、纯 CPU、幂等。
+
+## 0. 一等公民 = 分析模块那样用
+
+回测不是藏在 engine 里的一套散函数，而是**像分析模块一样的一等入口**：
+
+| 分析模块 | 回测模块 (RFC-016) |
+|---------|-------------------|
+| `Analyzer` 类 | **`Simulator`** 类 |
+| 顶层 `analyze(...)` 便捷函数 | **顶层 `simulate(...)`** 便捷函数 |
+| 产出 `AnalysisReport` | 产出 **`BacktestReport`** |
+| `engine/__init__.py` 导出 | 导出 `Simulator` + 报告模型 |
+
+```python
+from engine.simulator import simulate, Simulator
+report = simulate(funds, initial_amount=200.0, windows=[30, 90, 365])
+# 或类方式
+sim = Simulator(initial_amount=200.0, windows=[30, 90, 365])
+report = sim.simulate(funds)
+# 消费
+report.summary["avg_excess_pct"]            # 多窗口平均超额
+report.windows[365].strategy_return_pct      # 近一年动态调仓收益
+report.windows[90].daily[-1].actions         # 最近一日各基金动作
+```
 
 ---
 
@@ -77,18 +101,27 @@ simulate_portfolio(
 | `_max_drawdown(series)` | 最大回撤（%） |
 | `build_funds_input(rows)` | 便捷把 `{code:[(date, nav),...]}` 转成 funds 输入 |
 
+### 4.4 对外报告模型（`engine/models.py`，已导出）
+| 模型 | 说明 |
+|------|------|
+| `SimDaySnapshot` | 单日快照：总市值/现金/持仓/目标权重/动作/当日净值 |
+| `BacktestWindow` | 单窗口：收益/基准/超额/双回撤/期末权重/每日快照/per_fund |
+| `BacktestReport` | 完整报告：多窗口字典 + `summary`(最优/最差/平均超额) + 初始配置 |
+
 ## 5. 使用示例
 
 ```python
-from engine.simulator import simulate_portfolio, build_funds_input
+from engine.simulator import simulate, build_funds_input
 
 # rows: {code: [(date_str, nav), ...]}  从 fund_nav_history 拉取
 funds = build_funds_input(rows)
-res = simulate_portfolio(funds, initial_amount=200.0, windows=[30, 90, 365], warmup=252)
+report = simulate(funds, initial_amount=200.0, windows=[30, 90, 365], warmup=252)
 
-for w, r in res.items():
-    print(f"近{w}天: 策略{r.strategy_return_pct:+.1f}% 基准{r.buy_hold_return_pct:+.1f}% "
-          f"超额{r.excess_return_pct:+.1f}% 回撤{r.max_drawdown_pct:.1f}%")
+for wd, w in report.windows.items():
+    print(f"近{wd}天: 策略{w.strategy_return_pct:+.1f}% 基准{w.buy_hold_return_pct:+.1f}% "
+          f"超额{w.excess_return_pct:+.1f}% 回撤{w.strategy_max_drawdown_pct:.1f}%")
+# 多窗口汇总
+print(report.summary)   # {best_excess_pct, worst_excess_pct, avg_excess_pct, windows}
 ```
 
 ## 6. 真实数据结果（2026-08-02，4 只测试基金，初始各 50 元）
@@ -128,3 +161,7 @@ for w, r in res.items():
 - 2026-08-02: 初版实现 `simulator.py` + `test_simulator.py` + 本 RFC。
   修复了回测最隐蔽的两个正确性 bug：① 回放日历只用单只基金日期；
   ② 缺日被当 0 → 改为 carry-forward 最近已知净值（前者把基准从 -5% 错算成 -28%）。
+- 2026-08-02: **升级为一等公民**——新增 `Simulator` 类 + 顶层 `simulate()`
+  便捷函数，产出 `BacktestReport`（与分析模块 `Analyzer`/`analyze()`/`AnalysisReport`
+  平级）；报告模型 `SimDaySnapshot`/`BacktestWindow`/`BacktestReport` 加入 `models.py`
+  并从 `engine/__init__.py` 导出；测试改用新入口，全引擎 148 passed。

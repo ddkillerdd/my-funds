@@ -515,3 +515,55 @@ class AnalysisReport:
     completeness: Optional[Completeness] = None
     degradation: Optional[Degradation] = None
     historical_comparison: Optional[HistoricalComparison] = None
+
+
+# ============================================================
+#  BACKTEST / SIMULATION REPORT (RFC-016)
+# ============================================================
+
+@dataclass
+class SimDaySnapshot:
+    """策略回测单日快照。"""
+    date: str
+    total_value: float
+    cash: float
+    holdings_value: float
+    # code -> 目标权重(0~1)
+    target_weights: Dict[str, float] = field(default_factory=dict)
+    # code -> 动作(action 名, 如 buy/reduce/hold/sell)
+    actions: Dict[str, str] = field(default_factory=dict)
+    # code -> 当日净值(用于净值曲线)
+    nav: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class BacktestWindow:
+    """单个回放窗口(strategy window)的汇总(与分析模块 per-fund diagnosis 平级)。"""
+    window_days: int
+    start_date: str
+    end_date: str
+    initial_amount: float
+    final_value: float
+    strategy_return_pct: float          # 动态调仓收益 %
+    buy_hold_return_pct: float          # 等权买入持有基准 %
+    excess_return_pct: float            # 超额 = strategy - buy_hold
+    strategy_max_drawdown_pct: float
+    buy_hold_max_drawdown_pct: float
+    final_weights: Dict[str, float] = field(default_factory=dict)   # 期末实际权重
+    daily: List[SimDaySnapshot] = field(default_factory=list)
+    # code -> {start_value, end_value, return_pct} 各基金贡献
+    per_fund: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+
+@dataclass
+class BacktestReport:
+    """完整策略回测报告(与分析模块 AnalysisReport 平级的一等公民)。"""
+    generated_at: str = ""
+    duration_seconds: float = 0.0
+    initial_amount: float = 0.0
+    initial_weights: Dict[str, float] = field(default_factory=dict)  # 建仓权重(默认等权)
+    target_vol: float = 0.15
+    warmup: int = 252
+    # window_days -> BacktestWindow
+    windows: Dict[int, BacktestWindow] = field(default_factory=dict)
+    summary: Dict[str, float] = field(default_factory=dict)  # 多窗口最优/最差/平均超额

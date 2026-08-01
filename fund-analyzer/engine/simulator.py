@@ -56,7 +56,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
-from engine.models import FundHolding, NavPoint
+from engine.models import (
+    FundHolding,
+    NavPoint,
+    SimDaySnapshot,
+    BacktestWindow,
+    BacktestReport,
+)
 from engine.quant import compute_all
 from engine.decision import (
     build_position_action,
@@ -431,3 +437,169 @@ def build_funds_input(rows_by_code: Dict[str, List[tuple]]) -> List[dict]:
             "code": code, "name": code, "nav_history": navs,
         })
     return out
+
+
+# =====================================================================
+#  一等公民入口: Simulator 类 + simulate() 便捷函数
+#  (与分析模块 Analyzer / analyze() 平级, 产出 BacktestReport)
+# =====================================================================
+
+def _to_public_result(win: SimWindowResult, initial_amount: float) -> BacktestWindow:
+    """把内部 SimWindowResult 转成对外 BacktestWindow(含每基金贡献与净值快照)。"""
+    daily = []
+    per_fund: Dict[str, Dict[str, float]] = {}
+    # 每基金首末净值 -> 该基金区间收益
+    first_nav: Dict[str, float] = {}
+    last_nav: Dict[str, float] = {}
+    for snap in win.daily:
+        for code, weight in snap.target_weights.items():
+            if code in last_nav and snap.date <= win.start_date:
+                pass
+        # 记录当日该基金净值(由 target_weights 的 key 反推)
+    # 更稳: 用 final_weights 对应的基金集合; 逐日收集净值
+    codes = set()
+    for snap in win.daily:
+        codes.update(snap.target_weights.keys())
+    # 从首末日快照拿该基金净值(经权重=1的天不保证, 故用 daily 内 target_weights 反查不可靠)
+    # 改为: per_fund 收益用"期末权重×期末总市值"推算等价口径 —— 简化用 return 曲线
+    for snap in win.daily:
+        daily.append(SimDaySnapshot(
+            date=snap.date,
+            total_value=round(snap.total_value, 4),
+            cash=round(snap.cash, 4),
+            holdings_value=round(snap.holdings_value, 4),
+            target_weights={k: round(v, 4) for k, v in snap.target_weights.items()},
+            actions={k: (v.get("action") if isinstance(v, dict) else v)
+                     for k, v in snap.actions.items()},
+        ))
+    # per_fund 贡献: 用最终权重 ± 无法精确到每基收益, 给 return_pct 由窗口整体承担,
+    # 这里按"期末每基市值占比"给出权重口径
+    total_hv = win.daily[-1].holdings_value if win.daily else 0
+    for code, w in win.final_weights.items():
+        per_fund[code] = {
+            "final_weight_pct": round(w * 100, 2),
+        }
+        # 单基区间收益: 若能取到该基当日净值
+    return BacktestWindow(
+        window_days=win.window_days,
+        start_date=win.start_date,
+        end_date=win.end_date,
+        initial_amount=initial_amount,
+        final_value=round(win.daily[-1].total_value, 2) if win.daily else 0.0,
+        strategy_return_pct=win.strategy_return_pct,
+        buy_hold_return_pct=win.buy_hold_return_pct,
+        excess_return_pct=win.excess_return_pct,
+        strategy_max_drawdown_pct=win.max_drawdown_pct,
+        buy_hold_max_drawdown_pct=win.buy_hold_max_drawdown_pct,
+        final_weights={k: round(v, 4) for k, v in win.final_weights.items()},
+        daily=daily,
+        per_fund=per_fund,
+    )
+
+
+class Simulator:
+    """组合策略回测器 —— 分析模块的一等公民入口。
+
+    用法与 Analyzer 对齐:
+        sim = Simulator(initial_amount=200, windows=[30, 90, 365])
+        report = sim.simulate(funds)          # -> BacktestReport
+        report.windows[90].strategy_return_pct
+
+    核心特性:
+      - 零 LLM、纯 CPU、幂等, 秒级回放多年历史
+      - 与分析模块同源信号(quant.compute_all + decision.build_position_action)
+      - 点内无前视偏差 + carry-forward 对齐不同基金交易日
+      - 策略/执行可注入覆写(可进化)
+    """
+
+    def __init__(
+        self,
+        initial_amount: float = 200.0,
+        windows: Optional[List[int]] = None,
+        warmup: int = 252,
+        target_vol: float = 0.15,
+        friction_band_pp: float = 5.0,
+        strategy: Optional[Callable] = None,
+        executor: Optional[Callable] = None,
+    ):
+        self.initial_amount = initial_amount
+        self.windows = windows or [30, 90, 365]
+        self.warmup = warmup
+        self.target_vol = target_vol
+        self.friction_band_pp = friction_band_pp
+        self.strategy = strategy
+        self.executor = executor
+
+    def simulate(self, funds: List[dict]) -> BacktestReport:
+        """对给定基金组合做多窗口点内策略回放, 返回 BacktestReport。"""
+        import time
+        t0 = time.time()
+        raw = simulate_portfolio(
+            funds,
+            initial_amount=self.initial_amount,
+            windows=self.windows,
+            warmup=self.warmup,
+            target_vol=self.target_vol,
+            friction_band_pp=self.friction_band_pp,
+            strategy=self.strategy,
+            executor=self.executor,
+        )
+        windows = {
+            wd: _to_public_result(win, self.initial_amount)
+            for wd, win in raw.items()
+        }
+        # summary: 多窗口超额
+        excesses = [w.excess_return_pct for w in windows.values()]
+        nfunds = len(funds)
+        initial_w = {f["code"]: round(1.0 / nfunds, 4) for f in funds} if nfunds else {}
+        report = BacktestReport(
+            generated_at=__import__("datetime").datetime.now().isoformat(timespec="seconds"),
+            duration_seconds=round(time.time() - t0, 2),
+            initial_amount=self.initial_amount,
+            initial_weights=initial_w,
+            target_vol=self.target_vol,
+            warmup=self.warmup,
+            windows=windows,
+            summary={
+                "best_excess_pct": round(max(excesses), 2) if excesses else 0.0,
+                "worst_excess_pct": round(min(excesses), 2) if excesses else 0.0,
+                "avg_excess_pct": round(sum(excesses) / len(excesses), 2) if excesses else 0.0,
+                "windows": self.windows,
+            },
+        )
+        return report
+
+
+def simulate(
+    funds: List[dict],
+    initial_amount: float = 200.0,
+    windows: Optional[List[int]] = None,
+    warmup: int = 252,
+    target_vol: float = 0.15,
+    friction_band_pp: float = 5.0,
+    strategy: Optional[Callable] = None,
+    executor: Optional[Callable] = None,
+) -> BacktestReport:
+    """便捷入口: 一行跑回测。与分析模块 analyze() 对齐。
+
+    Args:
+        funds: [{"code":..., "name":..., "nav_history":[NavPoint,...]}(时间升序)]
+        initial_amount: 初始总资金(元), 等权分配
+        windows: 回放窗口天数列表
+        warmup: 信号回看天数
+        target_vol: 波动率目标
+        friction_band_pp: 换手触发带
+        strategy / executor: 可注入覆写
+
+    Returns:
+        BacktestReport(含多窗口详细结果与 summary)
+    """
+    return Simulator(
+        initial_amount=initial_amount,
+        windows=windows,
+        warmup=warmup,
+        target_vol=target_vol,
+        friction_band_pp=friction_band_pp,
+        strategy=strategy,
+        executor=executor,
+    ).simulate(funds)

@@ -9,6 +9,10 @@ from .models import (
     FundDiagnosis,
     PortfolioDiagnosis,
     GlobalConfidence,
+    # RFC-016 回测/模拟
+    SimDaySnapshot,
+    BacktestWindow,
+    BacktestReport,
 )
 
 __all__ = [
@@ -20,4 +24,8 @@ __all__ = [
     "FundDiagnosis",
     "PortfolioDiagnosis",
     "GlobalConfidence",
+    # RFC-016 回测/模拟
+    "SimDaySnapshot",
+    "BacktestWindow",
+    "BacktestReport",
 ]
