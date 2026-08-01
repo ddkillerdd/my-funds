@@ -83,6 +83,7 @@ class LLMClient:
         timeout: Optional[float] = None,
         step_label: str = "",
         model: Optional[str] = None,  # v5: override model per call
+        json_mode: bool = False,  # v7.1: force JSON object output via response_format
     ) -> str:
         """
         Call LLM with fallback chain.
@@ -116,7 +117,7 @@ class LLMClient:
 
             for attempt in range(self.config.max_retries_per_model + 1):
                 try:
-                    result = self._call_once(model, prompt, temperature, max_tokens, t)
+                    result = self._call_once(model, prompt, temperature, max_tokens, t, json_mode)
                     if is_fallback:
                         self._fallback_count += 1
                     self._models_used[step_label or f"call_{self._call_count}"] = model
@@ -142,6 +143,7 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
         timeout: float,
+        json_mode: bool = False,
     ) -> str:
         """Single API call."""
         url = f"{self.config.api_base}/chat/completions"
@@ -154,6 +156,12 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+
+        # v7.1: 强制 JSON 对象输出。opencode/deepseek-v4-flash 默认倾吐散文
+        # (把字段当讨论对象而非输出 JSON), 导致 parse_json_response 找不到 JSON
+        # 而大儒 fallback。实测 response_format={"type":"json_object"} 完美返回纯 JSON。
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
