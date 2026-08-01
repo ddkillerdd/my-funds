@@ -710,102 +710,168 @@ class Analyzer:
     ) -> PortfolioDiagnosis:
         """Synthesize portfolio-level diagnosis."""
         # Build portfolio data string
-        lines = []
-        lines.append(f"=== 组合概况 ===")
-        lines.append(f"总市值: {ground.total_market_value:.2f}元")
-        lines.append(f"总成本: {ground.total_cost:.2f}元")
-        lines.append(f"总盈亏: {ground.total_pnl:.2f}元 ({ground.total_pnl_pct:.2f}%)")
-        lines.append(f"持仓数量: {ground.holding_count} (活跃: {ground.active_count}, 货币: {ground.money_fund_count})")
-        lines.append(f"数据天数: {ground.data_days}")
-        lines.append(f"数据质量: {ground.overall_data_quality}")
-        lines.append("")
 
-        if ground.correlation:
-            lines.append(f"=== 相关性矩阵 ===")
-            lines.append(f"基金: {ground.correlation.labels}")
-            for i, row in enumerate(ground.correlation.matrix):
-                lines.append(f"  {ground.correlation.labels[i]}: {[round(r, 4) if r else 'N/A' for r in row]}")
-            lines.append(f"平均成对相关性: {ground.correlation.avg_pairwise_corr}")
-            if ground.correlation.high_corr_pairs:
-                for p in ground.correlation.high_corr_pairs:
-                    lines.append(f"⚠ 高相关性: {p['pair']} = {p['correlation']}")
-            lines.append("")
+        # ==========================================================
+        # 组合诊断：纯量化计算（B 方案，不依赖 LLM，杜绝 NIM 超时/残缺返回）
+        # 数据源：集中度 + 有效前沿 + 盈亏 + 相关性，全部来自 PortfolioGroundTruth
+        # ==========================================================
+        concentration = ground.concentration
+        frontier = ground.efficient_frontier
+        corr = ground.correlation
 
-        if ground.concentration:
-            lines.append(f"=== 集中度 ===")
-            lines.append(f"HHI: {ground.concentration.hhi_index} ({ground.concentration.hhi_label})")
-            lines.append(f"Top1: {ground.concentration.top1_pct}%  Top3: {ground.concentration.top3_pct}%")
-            lines.append("")
+        # ---- 1) 整体健康分（量化加权） ----
+        # 满分100，从以下维度扣分：集中度过高、偏离有效前沿、负盈亏、数据不足
+        score = 100.0
+        deductions = []
 
-        if ground.efficient_frontier:
-            lines.append(f"=== 有效前沿 ===")
-            lines.append(f"模拟次数: {ground.efficient_frontier.simulations}")
-            lines.append(f"最优Sharpe权重: {ground.efficient_frontier.optimal_sharpe_weights}")
-            lines.append(f"最小波动权重: {ground.efficient_frontier.min_vol_weights}")
-            lines.append(f"当前位置: 风险={ground.efficient_frontier.current_position_risk}% 收益={ground.efficient_frontier.current_position_return}%")
-            lines.append(f"距有效前沿: {ground.efficient_frontier.distance_to_frontier_pct}% ({ground.efficient_frontier.position_quality})")
-            lines.append("")
+        # 集中度扣分
+        if concentration and isinstance(concentration.hhi_index, (int, float)):
+            hhi = concentration.hhi_index
+            if hhi >= 0.5:
+                score -= 30; deductions.append("集中度极高(HHI≥0.5)")
+            elif hhi >= 0.3:
+                score -= 18; deductions.append("集中度偏高(HHI≥0.3)")
+            elif hhi >= 0.15:
+                score -= 6; deductions.append("集中度中等")
+        elif concentration:
+            lab = concentration.hhi_label
+            if lab == "high":
+                score -= 22; deductions.append("集中度偏高")
+            elif lab == "extreme":
+                score -= 30; deductions.append("集中度极高")
+            elif lab == "moderate":
+                score -= 6; deductions.append("集中度中等")
 
-        portfolio_data = "\n".join(lines)
+        # 有效前沿偏移扣分
+        if frontier and isinstance(frontier.distance_to_frontier_pct, (int, float)):
+            dist = abs(frontier.distance_to_frontier_pct)
+            if dist > 3.0:
+                score -= 20; deductions.append(f"偏离有效前沿{dist:.1f}%")
+            elif dist > 1.0:
+                score -= 10; deductions.append(f"轻微偏离有效前沿{dist:.1f}%")
 
-        # Build fund summaries
-        summaries = []
-        for fd in fund_diagnoses:
-            if fd.debate_summary:
-                s = f"### {fd.fund_name} ({fd.fund_code})\n"
-                s += f"健康评分: {fd.debate_summary.health_score}/100 ({fd.debate_summary.health_label})\n"
-                s += f"行动建议: {fd.debate_summary.action.get('type', 'hold')}\n"
-                s += f"优势: {', '.join(fd.debate_summary.strengths[:3])}\n"
-                s += f"风险: {', '.join(fd.debate_summary.risks[:3])}\n"
-                summaries.append(s)
+        # 盈亏扣分/加分
+        if isinstance(ground.total_pnl_pct, (int, float)):
+            if ground.total_pnl_pct < -10:
+                score -= 15; deductions.append(f"累计亏损{ground.total_pnl_pct:.1f}%")
+            elif ground.total_pnl_pct < 0:
+                score -= 5; deductions.append("持浮亏")
 
-        fund_summaries = "\n\n".join(summaries)
+        # 数据质量
+        if ground.overall_data_quality in ("sparse", "insufficient"):
+            score -= 12; deductions.append("数据稀疏")
 
-        try:
-            prompt = build_portfolio_prompt(portfolio_data, fund_summaries)
-            # Portfolio synthesis uses omni-30b (comprehensive) with nano fallback
-            portfolio_model = self.llm.config.model_assignments.get("portfolio",
-                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
-            portfolio_fallback = "nvidia/nvidia-nemotron-nano-9b-v2"
-            try:
-                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
-                                     step_label="portfolio", model=portfolio_model)
-            except Exception:
-                raw = self.llm.call(prompt, temperature=0.1, max_tokens=4096,
-                                     step_label="portfolio_fb", model=portfolio_fallback)
-            data = parse_json_response(raw)
+        overall_health_score = int(max(0, min(100, score)))
+        if overall_health_score >= 80:
+            health_label = "稳健"
+        elif overall_health_score >= 65:
+            health_label = "均衡"
+        elif overall_health_score >= 50:
+            health_label = "偏集中"
+        elif overall_health_score >= 35:
+            health_label = "需调整"
+        else:
+            health_label = "高风险"
 
-            if data:
-                return PortfolioDiagnosis(
-                    overall_health_score=data.get("overall_health_score", 50),
-                    health_label=data.get("health_label", ""),
-                    concentration_risk=data.get("concentration_risk", {}),
-                    correlation_issues=data.get("correlation_issues", []),
-                    efficient_frontier_analysis=data.get("efficient_frontier_analysis", {}),
-                    rebalance_suggestions=[
-                        RebalanceSuggestion(**r) for r in data.get("rebalance_suggestions", [])
-                        if isinstance(r, dict)
-                    ],
-                    strengths=data.get("strengths", []),
-                    weaknesses=data.get("weaknesses", []),
-                    confidence=data.get("confidence", 0.5),
+        # ---- 2) 集中度风险（真实量化数字） ----
+        concentration_risk = {}
+        if concentration:
+            def _fmt_pct(v):
+                return f"{v:.1f}%" if isinstance(v, (int, float)) else "N/A"
+            hhi_present = isinstance(concentration.hhi_index, (int, float))
+            if hhi_present:
+                detail = (
+                    f"HHI={concentration.hhi_index:.4f}，前1大占比{_fmt_pct(concentration.top1_pct)}，"
+                    f"前3大占比{_fmt_pct(concentration.top3_pct)}（{concentration.hhi_label}）"
                 )
             else:
-                raise ValueError("Failed to parse JSON")
-        except Exception as e:
-            logger.warning(f"Portfolio synthesis failed: {e}")
-            return PortfolioDiagnosis(
-                overall_health_score=50,
-                health_label="无法评估",
-                concentration_risk={},
-                correlation_issues=[],
-                efficient_frontier_analysis={},
-                rebalance_suggestions=[],
-                strengths=[],
-                weaknesses=[],
-                confidence=0.3,
-                notes=["LLM调用失败，使用降级分析"],
-            )
+                detail = f"集中度标签: {concentration.hhi_label}"
+            concentration_risk = {
+                "detail": detail,
+                "hhi_index": concentration.hhi_index,
+                "hhi_label": concentration.hhi_label,
+                "top1_pct": concentration.top1_pct,
+                "top3_pct": concentration.top3_pct,
+            }
+
+        # ---- 3) 有效前沿分析（含调仓方向，DB 映射 rebalance_suggestion 用） ----
+        efficient_frontier_analysis = {}
+        rebalance_direction = "维持现状"
+        if frontier:
+            optimal_vs_current = None
+            if frontier.optimal_sharpe_weights and (
+                frontier.optimal_sharpe_weights or frontier.min_vol_weights
+            ):
+                optimal_vs_current = {}
+                for code, opt_w in frontier.optimal_sharpe_weights.items():
+                    optimal_vs_current[code] = opt_w
+            efficient_frontier_analysis = {
+                "simulations": frontier.simulations,
+                "optimal_sharpe_weights": frontier.optimal_sharpe_weights,
+                "min_vol_weights": frontier.min_vol_weights,
+                "current_risk": frontier.current_position_risk,
+                "current_return": frontier.current_position_return,
+                "distance_to_frontier_pct": frontier.distance_to_frontier_pct,
+                "position_quality": frontier.position_quality,
+            }
+            if isinstance(frontier.distance_to_frontier_pct, (int, float)) and abs(frontier.distance_to_frontier_pct) > 1.5:
+                rebalance_direction = (
+                    "降低风险敞口" if (frontier.current_position_risk or 0) > 0.25
+                    else "适度再平衡，贴近有效前沿"
+                )
+            elif frontier.position_quality in ("suboptimal", "poor"):
+                rebalance_direction = "建议再平衡"
+        efficient_frontier_analysis["rebalance_direction"] = rebalance_direction
+
+        # ---- 4) 调仓建议（由最优Sharpe权重差值量化生成） ----
+        rebalance_suggestions = []
+        if frontier and frontier.optimal_sharpe_weights and frontier.optimal_sharpe_weights:
+            total_w = sum(frontier.optimal_sharpe_weights.values()) or 1.0
+            for code, opt_w in frontier.optimal_sharpe_weights.items():
+                opt_share = opt_w / total_w * 100.0
+                action = "increase" if opt_share > 20 else "decrease" if opt_share < 5 else "hold"
+                rebalance_suggestions.append(
+                    RebalanceSuggestion(
+                        fund_code=code,
+                        action=action,
+                        target_ratio=round(opt_share, 1),
+                        change_pct=0.0,  # 方向已由 action 表达，差值不强行估算
+                        reason=f"最优Sharpe权重{opt_share:.1f}%",
+                    )
+                )
+
+        # ---- 5) strengths / weaknesses（量化事实模板） ----
+        strengths, weaknesses = [], []
+        if ground.total_pnl_pct and ground.total_pnl_pct > 0:
+            strengths.append(f"组合累计盈利{ground.total_pnl_pct:.2f}%")
+        if frontier and frontier.position_quality in ("optimal", "near_optimal"):
+            strengths.append(f"组合接近有效前沿({frontier.position_quality})")
+        if concentration and isinstance(concentration.top3_pct, (int, float)):
+            if concentration.top3_pct <= 60:
+                strengths.append(f"持仓分散度尚可(前3大{concentration.top3_pct:.1f}%)")
+        if deductions:
+            weaknesses = deductions[:3]
+        if concentration and isinstance(concentration.top3_pct, (int, float)) and concentration.top3_pct > 70:
+            weaknesses.append(f"前3大持仓占比过高({concentration.top3_pct:.1f}%)")
+        if frontier and isinstance(frontier.distance_to_frontier_pct, (int, float)) and abs(frontier.distance_to_frontier_pct) > 3:
+            weaknesses.append(f"大幅偏离有效前沿({frontier.distance_to_frontier_pct:.1f}%)")
+
+        return PortfolioDiagnosis(
+            overall_health_score=overall_health_score,
+            health_label=health_label,
+            concentration_risk=concentration_risk,
+            correlation_issues=(
+                [dict(p) for p in corr.high_corr_pairs][:3] if corr and corr.high_corr_pairs else []
+            ),
+            efficient_frontier_analysis=efficient_frontier_analysis,
+            rebalance_suggestions=rebalance_suggestions,
+            strengths=strengths or ["组合数据完整"],
+            weaknesses=weaknesses or ["无明显短板"],
+            confidence=0.9,
+            notes=["组合诊断由量化指标计算生成（集中度/有效前沿/盈亏），未使用LLM"],
+        )
+
+
 
     def _cross_validate(
         self,

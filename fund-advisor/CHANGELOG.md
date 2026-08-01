@@ -2,6 +2,23 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [6.4] - 2026-08-01 — run-advisor 落库 + 量化组合诊断
+
+### Fixed
+- **定时/手动 run-advisor 不落库**：`POST /api/scheduler/run-advisor` 原先只分析+发邮件，报告不进 `advisor_report`，前端永远看不到定时分析结果（只能看邮件）。新增 `AdvisorJob._persist_report()`：写报告 + RFC-012 回测快照 + 按 `MAX_REPORTS=30` 清理旧报告。定时/手动分析现在都会落库、前端可回溯、计入回测命中率。
+- **组合诊断偶发空白**：portfolio 阶段 NIM(omni-30b/nano-9b) 多次超时/残缺返回时，组合诊断字段会静默变空（连"无法评估"都消失），前端整块空白。
+
+### Changed
+- **组合诊断改为纯量化计算**（B 方案）：`_portfolio_synthesis` 去掉全部 LLM 调用，改由 `PortfolioGroundTruth`（集中度/有效前沿/盈亏/相关性）确定性生成——整体健康分按集中度+前沿偏离+盈亏+数据质量加权扣分 → `health_label`；集中度风险输出真实 HHI/前1/前3 占比；调仓建议由最优 Sharpe 权重量化生成；strength/weakness 用量化事实模板。彻底杜绝 NIM 超时导致的空白/摆荡，零 LLM 依赖（符合"LLM 只解读不评分"，组合解读进一步量化）。
+
+### Added
+- `AdvisorJob.report_id` 实例字段（本次运行落库的报告 id），调用方/cron 可直接获取。
+
+### Verified
+- 全引擎 123 测试通过（含 money_fund/序列化回归）。
+- 量化组合诊断单测：`overall_health_score=72/均衡`、`concentration_risk=HHI 0.33+前3占75.2%`、`rebalance_direction=适度再平衡`、rebalance_suggestions 4 条、strength/weakness 均量化生成。
+- 端到端 run-advisor：id=25 由 scheduler 正确落库 + `record_advice: wrote 4 advices`。
+
 ## [6.3] - 2026-08-01 — 动作确定性收敛（RFC-013）
 
 ### Changed

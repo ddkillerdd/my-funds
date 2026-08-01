@@ -10,6 +10,7 @@ Concurrency guard:
   (e.g. OpenClaw cron timeout/retry). Pass force=True to bypass the lock.
 """
 
+import json
 import logging
 from datetime import datetime, date
 
@@ -18,18 +19,23 @@ from sqlalchemy.orm import Session
 from backend.services.advisor_service import AdvisorService
 from backend.services.mail_service import MailService
 from backend.models.email_send_record import EmailSendRecord
+from backend.models.advisor_report import AdvisorReport
 
 logger = logging.getLogger(__name__)
+
+MAX_REPORTS = 30  # 与 api/advisor.py 保持一致，最多保留最近报告份数
 
 
 class AdvisorJob:
     """Run AI portfolio analysis and push results."""
 
-    def __init__(self, db: Session, push_email: bool = True, model: str = "stepfun-ai/step-3.7-flash", force: bool = False):
+    def __init__(self, db: Session, push_email: bool = True, model: str = "stepfun-ai/step-3.7-flash", force: bool = False, persist_report: bool = True):
         self.db = db
         self.push_email = push_email
         self.model = model
         self.force = force
+        self.persist_report = persist_report
+        self.report_id = None  # 本次运行保存的 advisor_report.id（供调用方/cron 获取）
 
     def _today_cst(self) -> date:
         """Return the current calendar date in Asia/Shanghai (UTC+8)."""
@@ -50,6 +56,77 @@ class AdvisorJob:
         except Exception:
             # A concurrent run already inserted today's row → dedupe is fine.
             self.db.rollback()
+
+    def _persist_report(self, result: dict) -> None:
+        """保存分析报告到 advisor_report（与 POST /api/advisor/analyze 一致）。
+
+        写入报告 + RFC-012 建议回测快照 + 清理旧报告（保留最近 MAX_REPORTS 份）。
+        任何失败都不阻断主流程（只记日志，不影响发邮件）。
+        """
+        try:
+            report = AdvisorReport(
+                report_json=json.dumps(result, ensure_ascii=False),
+                model_used=result.get("model", self.model),
+            )
+            self.db.add(report)
+            self.db.commit()
+            self.db.refresh(report)
+
+            # RFC-012: 建议回测快照（关联 report_id）
+            try:
+                from backend.services.backtest_service import BacktestService
+                bsvc = BacktestService(self.db)
+                actions = [
+                    {
+                        "fund_code": a.get("fund_code"),
+                        "fund_name": a.get("fund_name"),
+                        "action": a.get("action"),
+                        "change_pct": a.get("change_pct"),
+                    }
+                    for a in (result.get("actions") or [])
+                    if a.get("fund_code") and a.get("action")
+                ]
+                navs = {}
+                for fd in (result.get("per_fund_diagnosis") or []):
+                    q = fd.get("quant_indicator", {})
+                    if fd.get("fund_code") and q.get("nav"):
+                        navs[fd["fund_code"]] = q["nav"]
+                bsvc.record_advice(
+                    report_id=report.id,
+                    advice_date=self._today_cst(),
+                    actions=actions,
+                    fund_navs=navs,
+                )
+            except Exception as e:  # noqa: BLE001
+                self.db.rollback()
+                logger.warning("backtest record_advice failed in advisor job: %s", e)
+
+            # 清理旧报告，只保留最近 MAX_REPORTS 份
+            from sqlalchemy import desc
+            total = self.db.query(AdvisorReport).count()
+            if total > MAX_REPORTS:
+                to_delete = total - MAX_REPORTS
+                # 按(创建时间, id)倒序，跳过最新的 MAX_REPORTS 份，剩下的即最旧的待删记录
+                ids_to_delete = (
+                    self.db.query(AdvisorReport.id)
+                    .order_by(desc(AdvisorReport.created_at), desc(AdvisorReport.id))
+                    .offset(MAX_REPORTS)
+                    .all()
+                )
+                delete_ids = [r[0] for r in ids_to_delete[:to_delete]]
+                self.db.query(AdvisorReport).filter(
+                    AdvisorReport.id.in_(delete_ids)
+                ).delete(synchronize_session=False)
+                self.db.commit()
+                logger.info(
+                    "Cleaned %d old report(s) in advisor job, kept last %d", to_delete, MAX_REPORTS
+                )
+
+            logger.info("Advisor report saved (id=%s, model=%s) [from advisor job]", report.id, report.model_used)
+            self.report_id = report.id
+        except Exception as e:  # noqa: BLE001
+            self.db.rollback()
+            logger.warning("persist report failed in advisor job: %s", e)
 
     def run(self) -> dict:
         """
@@ -91,6 +168,11 @@ class AdvisorJob:
         assessment = result.get("portfolio_diagnosis", {}).get("overall_assessment", "")
         is_fallback = ("无法分析" in assessment or "暂不可用" in assessment)
 
+        # Step 1.5: 持久化报告到 advisor_report（与 POST /api/advisor/analyze 行为一致，
+        # 让定时任务/手动 run-advisor 的报告也能在前端回溯、计入 RFC-012 回测命中率）
+        if self.persist_report:
+            self._persist_report(result)
+
         # Step 2: Send email (respect daily dedupe lock)
         email_sent = False
         if self.push_email and not is_fallback:
@@ -128,6 +210,7 @@ class AdvisorJob:
             "started_at": start_time.isoformat(),
             "finished_at": datetime.now().isoformat(),
             "model": self.model,
+            "report_id": self.report_id,
             "backtest": backtest,
         }
 
