@@ -2,6 +2,32 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [7.0] - 2026-08-01 — RFC-014 盈利导向决策引擎 v2（Signal→Position→Risk 三层闭环）
+
+> 设计文档：`fund-analyzer/docs/RFC-014-position-decision-engine.md`（重构唯一准绳，不受旧 RFC 约束）。
+> 唯一目标：为盈利服务，决策全量化、确定性、可回测。
+
+### Added（决策引擎三层闭环）
+- **L1 方向信号** `compute_direction`：动量(12月收益·0.5) + 均线排列(MA20/60·0.3) + RSI 修正(0.2) → `direction_score`∈[-1,1]
+- **L2 仓位映射** `build_position_action`：波动率目标 vol targeting（`target = base × (target_vol ÷ realized_vol)`，默认 target_vol=15%）→ 每只基金目标仓位%
+- **L3 风控层**（硬约束，优先级降序）：R1 回撤>25%清仓 / R2 回撤15-25%重仓减半 / R3 年化波动>60%压到30% / R4 单基目标>50%压到50% / R5 熊市防御≤30% / R6 换手触发带5pp防摩擦
+- **唯一权威动作结构 `PositionAction`**：五档 `buy/increase/hold/reduce/sell` + `target_weight%` + `regime` + `decision_source=quant_primary`，全量化幂等零 LLM
+- `tests/test_position.py` 11 用例（波动率目标/回撤止损/熊市防御/集中度/换手带/幂等/零LLM/动作-仓位自洽）
+
+### Changed
+- `_debate_synthesis` 动作源由 `deterministic_action` 升级为 `build_position_action`（`qi.mv_ratio` 作当前权重）
+- `merge_with_llm_explanation` RFC-014 优先：LLM 只附解读到 `reason`，永不改动作字段，冲突仅 note
+- `advisor_service._extract_actions` **单一权威重构**：只读每基 `debate_summary.action`，不再用 `rebalance_suggestions` 覆盖 → 根治历史「actions vs holdings_health 互相矛盾」
+- `holdings_health[].suggestion` 统一读 PositionAction + 新增 `action_label`/`target_weight_pct`
+- `normalize_action` 兼容 PositionAction（新字段保留，老字段 `type/change_pct` 补全为超集，历史报告不破）
+- 前端 AdvisorView 三视图统一读 `action_label` + 目标仓位%，旧报告无新字段时兼容兜底
+
+### 验证
+- 全引擎 137 测试通过（126 原 + 11 新）
+- 前端 `vite build` 通过
+- 后端重启 active，:8200 HTTP 200
+- 离线映射验证：id=23/25/26 动作统一为 per-fund watch/hold/hold/hold（id=26 原先被 rebalance 污染的 increase/decrease 已纠正）
+
 ## [6.4.1] - 2026-08-01 — 量化组合诊断 rebalance 阈值门控
 
 ### Fixed
