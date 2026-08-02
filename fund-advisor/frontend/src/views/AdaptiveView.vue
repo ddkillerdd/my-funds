@@ -9,6 +9,52 @@
       style="margin-bottom: 16px"
     />
 
+    <!-- 判读对照表: 人话翻译每个数字 -->
+    <el-card shadow="never" class="guide-card">
+      <template #header>
+        <div class="card-header">
+          <span>📖 怎么判断该不该采纳？(照着看)</span>
+          <el-link type="primary" @click="guideOpen = !guideOpen">{{ guideOpen ? '收起 ▲' : '展开 ▼' }}</el-link>
+        </div>
+      </template>
+      <div v-if="guideOpen" class="guide">
+        <p class="guide-head">从上到下看，<b>任何一格不合格就放弃</b>：</p>
+        <table class="guide-table">
+          <thead>
+            <tr><th style="width:110px">看什么</th><th style="width:150px">算什么意思</th><th>怎么算合格 👌</th><th>怎么算放弃 👎</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>① 校验：通过/未通过</b></td>
+              <td>系统先自己筛过一遍，判断这参数是不是“假的高收益”</td>
+              <td class="ok">✓ 通过（绿标）</td>
+              <td class="no">✗ 未通过（黄标）→ 直接跳过，别采纳</td>
+            </tr>
+            <tr>
+              <td><b>② 超额 + 相对增益</b></td>
+              <td>用新参数比“什么都不改(用默认)”在盲测段多赚多少个百分点</td>
+              <td class="ok">增益明显为正，如 +0.30pp 以上</td>
+              <td class="no">增益 ≤ 0 → 改了白改甚至更差，否决</td>
+            </tr>
+            <tr>
+              <td><b>③ 回撤</b></td>
+              <td>历史上最惨时，这个参数让钱最多跌多少（风险地板）</td>
+              <td class="ok">低于上限：中波动 ≤15%、高波动 ≤20~25%</td>
+              <td class="no">超过上限 → 风险你扛不起，丢</td>
+            </tr>
+            <tr>
+              <td><b>④ 夏普</b></td>
+              <td>这多赚的钱，是划算的赚，还是靠多担风险硬换</td>
+              <td class="ok">正数，如 0.30+ → 划算，采纳</td>
+              <td class="no">负的很明显（如 -0.5）→ 性价比差，别碰</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="guide-tip">💡 心法：<b>通过 + 增益正 + 回撤没超上限 + 夏普不是负的 → 才点采纳；缺任一就否决。</b><br/>
+        左下“**当前实战生效**”是你现在实际用的参数；采纳后从下次报告起生效，随时可一键回退保守默认。</p>
+      </div>
+    </el-card>
+
     <!-- 发起优化 -->
     <el-card shadow="never" class="option-card">
       <div class="fetch-row">
@@ -178,6 +224,7 @@ const statusFilter = ref('')
 const running = ref(false)
 const taskProgress = ref(0)
 const taskProgressText = ref('')
+const guideOpen = ref(true)
 
 async function loadFunds() {
   try {
@@ -311,6 +358,15 @@ onMounted(() => {
 .adaptive-view { padding: 4px; }
 .page-title { margin-top: 0; }
 .option-card { margin-bottom: 16px; }
+.guide-card { margin-bottom: 16px; }
+.guide { font-size: 13px; color: #303133; }
+.guide-head { margin: 0 0 8px; }
+.guide-table { width: 100%; border-collapse: collapse; }
+.guide-table th, .guide-table td { border: 1px solid #e4e7ed; padding: 7px 10px; text-align: left; vertical-align: top; }
+.guide-table th { background: #f5f7fa; font-weight: 600; }
+.guide-table .ok { color: #67c23a; font-weight: 600; }
+.guide-table .no { color: #f56c6c; font-weight: 600; }
+.guide-tip { margin-top: 10px; color: #606266; line-height: 1.7; }
 .fetch-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .label { color: #606266; font-size: 14px; }
 .lookback-sel { margin-left: 4px; }
