@@ -87,9 +87,6 @@
           <el-checkbox :value="90" label="90" />90天
           <el-checkbox :value="365" label="365" />365天
         </el-checkbox-group>
-        <span class="label param-gap">风险目标波动率：</span>
-        <el-slider v-model="targetVol" :min="0.05" :max="0.30" :step="0.01" style="width: 160px" />
-        <span class="vol-val">{{ (targetVol * 100).toFixed(0) }}%</span>
         <el-button type="primary" :loading="loading" class="run-btn" @click="run">
           {{ loading ? '回测中...' : '开始回测' }}
         </el-button>
@@ -295,7 +292,6 @@ use([
 const fundOptions = ref([])
 const fundRows = ref([{ fund_code: '', amount: 5000 }])
 const selectedWindows = ref([30, 90, 365])
-const targetVol = ref(0.15)
 const loading = ref(false)
 const result = ref(null)
 const activeWindow = ref(90)
@@ -434,7 +430,6 @@ async function run() {
     result.value = await runSimulation({
       funds,
       windows: selectedWindows.value,
-      target_vol: targetVol.value,
     })
     activeWindow.value = selectedWindows.value.includes(90)
       ? 90
@@ -580,8 +575,6 @@ const cumPnlOption = computed(() => {
   gap: 12px;
   margin: 16px 0 8px;
 }
-.param-gap { margin-left: 16px; }
-.vol-val { color: #409eff; font-weight: 600; }
 .run-btn { margin-left: auto; }
 .tip-text { color: #909399; font-size: 12px; margin-top: 8px; }
 .opt-tag {
