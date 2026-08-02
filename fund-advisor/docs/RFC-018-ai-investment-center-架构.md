@@ -101,12 +101,12 @@ fund_candidate (基金候选池)
   latest_nav, nav_change_pct, label(标签), open_apply(bool), status
 
 portfolio_plan (投资计划 - 固定预算)
-  id, name, total_budget, used_amount, remaining, risk_profile(conservative/balanced/aggressive)
+  id, name, total_budget, used_amount, remaining, risk_profile(用户偏好: conservative/balanced/aggressive; 内部映射现有 playbook + 权重缩放)
   status(draft/active/completed), created_at, approved_at
   target_allocation(JSON: {fund_code: weight_pct})
 
 plan_tranche (分批批次 - 100份)
-  id, plan_id, tranche_no, units(应投份数), nav_signal(择时信号)
+  id, plan_id, tranche_no, units(应投份数), window(择时: now_entry/staged_entry/wait/avoid), dca_multiplier(倍率 0.6/1.0/1.3)
   plan_date, status(pending/executed), executed_at, amount
 
 plan_holding (计划持仓明细 - 每个基金盈亏分开记录)

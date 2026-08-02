@@ -36,7 +36,7 @@ class PortfolioPlan(Base):
     total_budget = Column(Numeric(14,2))        # 固定预算(如 100)
     used_amount = Column(Numeric(14,2), default=0)   # 已投入
     remaining = Column(Numeric(14,2))           # 剩余 = total - used
-    risk_profile = Column(String(20), default="balanced")  # conservative/balanced/aggressive
+    risk_profile = Column(String(20), default="balanced")  # 用户风险偏好: conservative/balanced/aggressive (UI层; 内部映射到现有 playbook+权重缩放, 见§2.3)
     status = Column(String(20), default="draft")  # draft/active/completed
     target_allocation = Column(JSON)             # {fund_code: weight_pct}
     ai_summary = Column(Text, default=None)      # AI 生成的方案解读/理由
@@ -51,8 +51,9 @@ class PlanTranche(Base):
     id = Column(BigInteger, primary_key=True)
     plan_id = Column(BigInteger, ForeignKey("portfolio_plan.id"), index=True)
     tranche_no = Column(Integer)          # 批次序号 1..N
-    units = Column(Integer)               # 应投份数(每份 = total_budget/100)
-    nav_signal = Column(String(30))       # 择时信号: buy/observe/avoid
+    units = Column(Numeric(10,2))         # 应投份数(展示: 本批金额/unit)
+    window = Column(String(30))           # 择时: now_entry/staged_entry/wait/avoid
+    dca_multiplier = Column(Numeric(4,2)) # 倍率: 0.6/1.0/1.3 (来自 dca_planner)
     plan_date = Column(Date)              # 建议执行日
     status = Column(String(20), default="pending")  # pending/executed
     executed_at = Column(DateTime, default=None)
@@ -85,25 +86,28 @@ class PlanHolding(Base):
 
 ### 2.1 每份金额 & 分批(核心公式)
 ```
-unit = total_budget / 100            # 每份金额
-# 分 100 份, 每批建议份数由组合级择时信号决定:
-#   - 估值低分位(机会区) → 一批 10-20 份 (多投)
-#   - 估值中性         → 一批 5-10 份 (正常)
-#   - 估值高/avoid     → 0 份, 暂停(耐心等)
+unit = total_budget / 100            # 每份金额(概念分母, 非硬条件)
+# 每批投入金额 = 本批预算 × dca.base_amount_pct(倍率)
+#   倍率来自现有 dca_planner(估值/趋势/回撤):
+#     - 低位/深坑 → x1.3 (多投)     中性 → x1.0 (标准)
+#     - 高位/弱趋势 → x0.6 (少投)   dca.enabled=false → 0 (停投) 或 window=avoid
 # 计划总时长: 建议 3-6 个月建完(行业惯例), 可配; 批次日期按周/双周生成, 遇节假日顺延。
 ```
-**分批金额分配到单只基金(问题2明确)**:
-- 每批总金额 = `本批份数 × unit`;
+> 口径对齐: 不另造"份数档位", 直接复用现有 `dca_planner.base_amount_pct` 倍率机制,
+> 避免两套择时口径打架。每批份数由 `本批金额 / unit` 反推(仅展示用)。
+
+**分批金额分配到单只基金(问题2明确)**
+- 每批总金额 = 本批预算 × 组合级倍率(见 2.2);
 - 默认按配比权重等比分配: `fund_i 本批金额 = 本批总金额 × weight_pct_i`;
-- 叠加**单只择时门控**: 若某只基金当前择时信号 = `avoid`(该基金自身估值过高/情绪过热), 则当批**跳过该只**, 其份额按加权比例分给其余仍可投的基金(确保本批总额投满、不浪费机会);
-- 本轮未投的基金当其信号转好时在后续批次补投。
+- 叠加**单只择时门控**: 某只基金 `dca.enabled=false` 或 `window=avoid` → 当批**跳过该只**, 份额按加权比例分给其余仍可投基金(确保本批总额投满);
+- 本轮未投基金当其信号转好时后续批次补投。
 
-### 2.2 组合级择时(扩充, 解决"择时是单只、计划是组合"缺口)
-- `dca_planner` 是单只接口, 但计划是组合 → 需要一层组合级择时聚合:
-  - 组合信号 = 各持仓基金择时信号按配比加权汇总;
-  - 判定: 多数(≥60%权重)基金为 buy→ 本批投宽松档(10-20份); 中性→正常档(5-10份); 多数 avoid→暂停批(0份);
-  - 供 AI 解读层再补充"当前市场环境"措辞。
-
+### 2.2 组合级择时(复用 `EntryRecommendation.window` + `dca.base_amount_pct`)
+- 现有 `compute_entry_recommendation()` 返回 `EntryRecommendation`:`window`(now_entry/staged_entry/wait/avoid 4档) + `dca.base_amount_pct` + `risk_gate`。
+- 组合级倍率 = 各基金 `dca.base_amount_pct` 按配比加权, 再乘预算;
+- 判定: 存在 `window=avoid` 且权重≥60% → 本批停投(`enabled=false`); 否则按加权倍率投;
+- 单只 `risk_gate.blocked` 会额外压低该只权重或剔除;
+- 供 AI 解读层补充"当前市场环境"措辞。
 ### 2.3 配比权重(复用 + 风控约束)
 - 基线: `suggested_ratio_pct`(screener 现成)。
 - 风控约束:
@@ -113,6 +117,11 @@ unit = total_budget / 100            # 每份金额
   - 高风险类(商品/行业/高波动)按 risk_profile 归一缩放:
     - conservative: 高风险×0.5, 债券/稳健权重上浮
     - aggressive: 高风险×1.2
+  - **risk_profile 与现有 playbook 的映射**(不另造策略概念):
+    - 现有 `playbook: value/trend/balanced/auto` 是策略风格; 用户"风险偏好"是 UI 层概念。
+    - conservative → playbook=balanced + 高风险×0.5;  balanced → playbook=balanced/auto;
+    - aggressive → playbook=trend/value(取决于选基) + 高风险×1.2。
+    - 荐基与配比实际调用仍走现有 `playbook`, risk_profile 只做权重缩放调节。
 - 归一化: `w_i / Σw_i × 100` 保证总和 100%。
 
 ### 2.4 回测验证(复用 simulator)
