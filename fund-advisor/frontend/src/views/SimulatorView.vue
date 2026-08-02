@@ -228,7 +228,15 @@
             <v-chart :option="cumPnlOption" autoresize style="height: 280px" />
           </div>
           <div class="chart-box">
-            <div class="chart-title">各基金历史净值走势（归一化，起始=100）</div>
+            <div class="chart-title">各基金历史净值走势
+              <div class="nav-window-switch">
+                <el-radio-group v-model="navWindow" size="small">
+                  <el-radio-button v-for="o in navWindowOptions" :key="o.value" :value="o.value">
+                    {{ o.label }}
+                  </el-radio-button>
+                </el-radio-group>
+              </div>
+            </div>
             <v-chart :option="navTrendOption" autoresize style="height: 280px" />
           </div>
         </div>
@@ -299,6 +307,13 @@ const selectedWindows = ref([30, 90, 365])
 const loading = ref(false)
 const result = ref(null)
 const activeWindow = ref(90)
+// 第4张图(净值走势)周期切换: 6M / 1Y / ALL
+const navWindow = ref('1Y')
+const navWindowOptions = [
+  { label: '近6月', value: '6M', days: 120 },
+  { label: '近1年', value: '1Y', days: 250 },
+  { label: '全部', value: 'ALL', days: 0 },
+]
 
 // 临时基金(任意代码拉取)
 const remoteCode = ref('')
@@ -382,6 +397,18 @@ const windowList = computed(() =>
 const activeDaily = computed(() => {
   const w = windowList.value.find((x) => x.window_days === activeWindow.value)
   return w ? w.daily : []
+})
+
+// 净值走势图的数据源: 取所有回测窗口里历史最长的那份(通常是365天),
+// 让"近6月/近1年/全部"切换有意义(不受当前 activeWindow 限制)
+const navDaily = computed(() => {
+  const all = windowList.value
+  if (!all.length) return []
+  let best = all[0]
+  for (const w of all) {
+    if (w.daily.length > best.daily.length) best = w
+  }
+  return best.daily || []
 })
 
 const summaryType = computed(() => {
@@ -538,15 +565,19 @@ const cumPnlOption = computed(() => {
   }
 })
 
-// 各基金历史净值走势(归一化到100, 便于并排对比涨跌幅度)
+// 各基金历史净值走势(可切换周期, 归一化到100, 便于并排对比涨跌幅度)
 const navTrendOption = computed(() => {
-  const dates = activeDaily.value.map((d) => d.date)
-  if (!dates.length) {
+  const all = navDaily.value
+  if (!all.length) {
     return { series: [] }
   }
-  // 收集该窗口内出现的所有基金code
+  // 按所选周期截取数据段
+  const days = navWindowOptions.find((o) => o.value === navWindow.value)?.days || 0
+  const slice = days > 0 ? all.slice(-days) : all  // 近6月/近1年 | 全部
+  const dates = slice.map((d) => d.date)
+  // 收集该周期内出现的所有基金code
   const codes = []
-  for (const d of activeDaily.value) {
+  for (const d of slice) {
     for (const c of Object.keys(d.nav || {})) {
       if (!codes.includes(c)) codes.push(c)
     }
@@ -558,10 +589,10 @@ const navTrendOption = computed(() => {
   }
   const palette = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9254de', '#13c2c2', '#fa8c16']
   const series = codes.map((c, i) => {
-    // 归一化: 以该基金该窗口首日净值为 100
-    const first = activeDaily.value.find((d) => d.nav && d.nav[c] != null)
+    // 归一化: 以该周期首日净值为 100, 与支付宝同口径可比
+    const first = slice.find((d) => d.nav && d.nav[c] != null)
     const base = first ? Number(first.nav[c]) : 1
-    const data = activeDaily.value.map((d) => {
+    const data = slice.map((d) => {
       const v = d.nav && d.nav[c]
       return v != null && base > 0 ? +(Number(v) / base * 100).toFixed(2) : null
     })
@@ -577,7 +608,7 @@ const navTrendOption = computed(() => {
   return {
     tooltip: { trigger: 'axis', valueFormatter: (v) => (v == null ? '-' : v.toFixed(2)) },
     legend: { top: 0, type: 'scroll' },
-    grid: { left: 70, right: 20, top: 30, bottom: 60 },
+    grid: { left: 70, right: 20, top: 40, bottom: 60 },
     xAxis: { type: 'category', data: dates, axisLabel: { rotate: 30, fontSize: 11 } },
     yAxis: { type: 'value', axisLabel: { formatter: (v) => v.toFixed(0) } },
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16 }],
@@ -665,7 +696,16 @@ const navTrendOption = computed(() => {
   gap: 16px;
 }
 .chart-box { border: 1px solid #ebeef5; border-radius: 8px; padding: 12px; }
-.chart-title { color: #606266; font-size: 13px; margin-bottom: 8px; }
+.chart-title {
+  color: #606266;
+  font-size: 13px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.nav-window-switch { flex-shrink: 0; }
 .advice-item { padding-left: 4px; }
 .advice-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .advice-msg { color: #303133; font-size: 14px; }
