@@ -84,6 +84,7 @@ class SimDayResult:
     total_value: float                 # 组合总市值(含现金)
     cash: float                        # 现金
     holdings_value: float              # 持仓市值
+    nav: Dict[str, float] = field(default_factory=dict)  # 每基金当日净值(历史净值走势用)
     actions: Dict[str, dict] = field(default_factory=dict)   # code -> action dict
     target_weights: Dict[str, float] = field(default_factory=dict)  # code -> 目标权重(0~1)
 
@@ -329,6 +330,7 @@ def _simulate_window(codes, histories, window_days, initial_amount,
         daily.append(SimDayResult(
             date=d, total_value=total_value, cash=cash,
             holdings_value=holdings_value,
+            nav={c: round(nav_of(c, d), 4) for c in codes},
             actions=actions, target_weights=target_weights,
         ))
 
@@ -468,6 +470,7 @@ def _to_public_result(win: SimWindowResult, initial_amount: float) -> BacktestWi
             total_value=round(snap.total_value, 4),
             cash=round(snap.cash, 4),
             holdings_value=round(snap.holdings_value, 4),
+            nav=dict(snap.nav),  # 每基金当日净值(历史净值走势用)
             target_weights={k: round(v, 4) for k, v in snap.target_weights.items()},
             actions={k: (v.get("action") if isinstance(v, dict) else v)
                      for k, v in snap.actions.items()},

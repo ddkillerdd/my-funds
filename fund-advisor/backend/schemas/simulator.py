@@ -51,6 +51,7 @@ class SimDailyPoint(BaseModel):
     cumulative_return_pct: float  # 累计收益率%
     actions: Dict[str, str] = Field(default_factory=dict)  # code->action(买/减/卖/持)
     target_weights: Dict[str, float] = Field(default_factory=dict)
+    nav: Dict[str, float] = Field(default_factory=dict)  # 每基金当日净值(历史净值走势用)
 
 
 class SimWindowOut(BaseModel):

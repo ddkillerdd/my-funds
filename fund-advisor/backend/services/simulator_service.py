@@ -202,6 +202,7 @@ class SimulatorService:
                 "daily_pnl": day_pnl,
                 "cumulative_pnl": cum_pnl,
                 "cumulative_return_pct": cum_ret,
+                "nav": snap.nav,  # 每基金当日净值(历史净值走势用)
                 "actions": snap.actions,
                 "target_weights": snap.target_weights,
             })

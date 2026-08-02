@@ -227,6 +227,10 @@
             <div class="chart-title">累计盈亏（相对初始投入）</div>
             <v-chart :option="cumPnlOption" autoresize style="height: 280px" />
           </div>
+          <div class="chart-box">
+            <div class="chart-title">各基金历史净值走势（归一化，起始=100）</div>
+            <v-chart :option="navTrendOption" autoresize style="height: 280px" />
+          </div>
         </div>
         <el-empty v-else description="该窗口历史不足，无每日数据" />
       </el-card>
@@ -531,6 +535,53 @@ const cumPnlOption = computed(() => {
         },
       },
     ],
+  }
+})
+
+// 各基金历史净值走势(归一化到100, 便于并排对比涨跌幅度)
+const navTrendOption = computed(() => {
+  const dates = activeDaily.value.map((d) => d.date)
+  if (!dates.length) {
+    return { series: [] }
+  }
+  // 收集该窗口内出现的所有基金code
+  const codes = []
+  for (const d of activeDaily.value) {
+    for (const c of Object.keys(d.nav || {})) {
+      if (!codes.includes(c)) codes.push(c)
+    }
+  }
+  const nameOf = (c) => {
+    const f = fundOptions.value.find((x) => x.fund_code === c)
+    const u = (result.value?.funds_used || []).find((x) => x.fund_code === c)
+    return (f?.fund_name || u?.fund_name || c) + ' ' + c
+  }
+  const palette = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9254de', '#13c2c2', '#fa8c16']
+  const series = codes.map((c, i) => {
+    // 归一化: 以该基金该窗口首日净值为 100
+    const first = activeDaily.value.find((d) => d.nav && d.nav[c] != null)
+    const base = first ? Number(first.nav[c]) : 1
+    const data = activeDaily.value.map((d) => {
+      const v = d.nav && d.nav[c]
+      return v != null && base > 0 ? +(Number(v) / base * 100).toFixed(2) : null
+    })
+    return {
+      name: nameOf(c),
+      type: 'line',
+      data,
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { width: 2, color: palette[i % palette.length] },
+    }
+  })
+  return {
+    tooltip: { trigger: 'axis', valueFormatter: (v) => (v == null ? '-' : v.toFixed(2)) },
+    legend: { top: 0, type: 'scroll' },
+    grid: { left: 70, right: 20, top: 30, bottom: 60 },
+    xAxis: { type: 'category', data: dates, axisLabel: { rotate: 30, fontSize: 11 } },
+    yAxis: { type: 'value', axisLabel: { formatter: (v) => v.toFixed(0) } },
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16 }],
+    series,
   }
 })
 </script>
