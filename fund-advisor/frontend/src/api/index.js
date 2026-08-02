@@ -181,5 +181,19 @@ export function getSimulatorFunds() {
   return api.get('/simulator/funds')
 }
 
+export function fetchRemoteFund(fundCode, fundName = '') {
+  return api.post('/simulator/fetch-remote', null, {
+    params: { fund_code: fundCode, fund_name: fundName },
+  })
+}
+
+export function getTmpFunds() {
+  return api.get('/simulator/tmp-funds')
+}
+
+export function cleanupTmpFunds(keepDays = 1) {
+  return api.post('/simulator/cleanup-tmp', null, { params: { keep_days: keepDays } })
+}
+
 
 export default api

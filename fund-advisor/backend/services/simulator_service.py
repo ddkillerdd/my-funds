@@ -28,6 +28,8 @@ if _ENGINE_PATH not in sys.path:
 
 from engine.simulator import Simulator  # noqa: E402
 from engine.models import NavPoint  # noqa: E402
+import json as _json  # noqa: E402
+from datetime import datetime as _dt, timedelta as _td  # noqa: E402
 
 # 可回测的最低历史天数(需覆盖 warmup + 最短窗口, 约 1 年)
 MIN_BACKTEST_DAYS = 210
@@ -77,7 +79,11 @@ class SimulatorService:
         return out
 
     def _get_nav_history(self, fund_code: str) -> List[NavPoint]:
-        """取某基金完整净值历史(时间升序)-> NavPoint 列表。"""
+        """取某基金完整净值历史(时间升序)-> NavPoint 列表。
+
+        优先主库 fund_nav_history; 若该代码仅存在于临时表(打标 is_tmp),
+        则从临时表 JSON 读取(用于单次模拟, 不污染主库)。
+        """
         from backend.models.nav_history import FundNavHistory
         records = self.db.execute(
             select(FundNavHistory.nav_date, FundNavHistory.unit_nav)
@@ -85,7 +91,10 @@ class SimulatorService:
             .order_by(FundNavHistory.nav_date.asc())
         ).all()
         navs = [NavPoint(date=str(r[0]), nav=float(r[1])) for r in records if r[1] is not None]
-        return navs
+        if navs:
+            return navs
+        # 主表无 -> 尝试临时表
+        return self._nav_from_tmp(fund_code)
 
     # ---------------------------------------------------------------
     #  主入口
@@ -383,3 +392,118 @@ class SimulatorService:
                                "history_days": len(navs)})
             total += amt
         return engine_funds, funds_used, total
+
+    # ================================================================
+    #  临时基金(任意代码拉取, 仅本次模拟, 打标记, 可清)
+    # ================================================================
+    def _nav_from_tmp(self, fund_code: str) -> List[NavPoint]:
+        """从临时表读取该基金的净值序列。"""
+        from backend.models.sim_tmp_fund import SimTmpFund
+        row = self.db.execute(
+            select(SimTmpFund.nav_json)
+            .where(SimTmpFund.fund_code == fund_code)
+        ).scalar_one_or_none()
+        if not row:
+            return []
+        try:
+            arr = _json.loads(row)
+        except Exception:
+            return []
+        return [NavPoint(date=str(p["d"]), nav=float(p["n"])) for p in arr]
+
+    def list_tmp_funds(self) -> List[dict]:
+        """列出当前临时拉取的基金(回测页展示可用/可清理)。"""
+        from backend.models.sim_tmp_fund import SimTmpFund
+        rows = self.db.execute(
+            select(SimTmpFund).order_by(SimTmpFund.last_used_at.desc())
+        ).scalars().all()
+        return [{
+            "fund_code": r.fund_code,
+            "fund_name": r.fund_name,
+            "nav_days": r.nav_days,
+            "first_nav_date": str(r.first_nav_date) if r.first_nav_date else None,
+            "last_nav_date": str(r.last_nav_date) if r.last_nav_date else None,
+            "last_used_at": str(r.last_used_at) if r.last_used_at else None,
+        } for r in rows]
+
+    async def fetch_remote_fund(self, fund_code: str, name: str = "") -> dict:
+        """从天天基金拉取单只基金历史净值(约2年), 存入临时表并打标。
+
+        不写 `funds` / `fund_nav_history` 主表。
+        返回: {fund_code, fund_name, nav_days, first_nav_date, last_nav_date, tmp}。
+        """
+        from backend.services.nav_fetcher import fetch_history_nav
+        from backend.models.sim_tmp_fund import SimTmpFund
+        import httpx
+
+        fund_code = str(fund_code).strip()
+        if not fund_code:
+            raise ValueError("fund_code 不能为空")
+
+        # 拉取约 2 年历史(够 365 窗口 + 252 预热), 上限 600 条
+        end = _dt.now().date()
+        start = end - _td(days=730)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            navs = await fetch_history_nav(
+                client, fund_code,
+                start_date=str(start), end_date=str(end),
+            )
+
+        if not navs:
+            raise ValueError(f"未找到基金 {fund_code} 的历史数据(可能代码无效)")
+
+        # 解析为 JSON 序列(升序)
+        navs.sort(key=lambda x: x.nav_date)
+        nav_json = _json.dumps(
+            [{"d": str(n.nav_date), "n": float(n.unit_nav), "p": float(n.change_pct) if n.change_pct is not None else None}
+             for n in navs]
+        )
+        fund_name = name or ""
+        # 尝试拿一下名称(若无)
+        if not fund_name:
+            fund_name = self._guess_fund_name(fund_code, navs)
+
+        now = _dt.utcnow()
+        SimTmpFund.upsert(
+            self.db, fund_code, fund_name, nav_json,
+            nav_days=len(navs),
+            first_date=navs[0].nav_date,
+            last_date=navs[-1].nav_date,
+            now=now,
+        )
+
+        return {
+            "fund_code": fund_code,
+            "fund_name": fund_name or fund_code,
+            "nav_days": len(navs),
+            "first_nav_date": str(navs[0].nav_date),
+            "last_nav_date": str(navs[-1].nav_date),
+            "tmp": True,
+        }
+
+    def _guess_fund_name(self, fund_code: str, navs) -> str:
+        """尝试从现有 funds 表或默认规则猜测名称。
+        (临时基金名称以 "代码" 兜底, 前端可自行改名展示)
+        """
+        from backend.models.fund import Fund
+        row = self.db.execute(
+            select(Fund.fund_name).where(Fund.fund_code == fund_code)
+        ).scalar_one_or_none()
+        if row:
+            return row
+        return ""
+
+    def cleanup_tmp_funds(self, keep_days: int = 1) -> int:
+        """清理临时基金(默认清理 1 天前拉取且未再使用的)。返回清理条数。"""
+        from backend.models.sim_tmp_fund import SimTmpFund
+        from sqlalchemy import delete as sa_delete
+        cutoff = _dt.utcnow() - _td(days=keep_days)
+        stale_ids = self.db.execute(
+            select(SimTmpFund.id).where(SimTmpFund.last_used_at < cutoff)
+        ).scalars().all()
+        if stale_ids:
+            self.db.execute(
+                sa_delete(SimTmpFund).where(SimTmpFund.id.in_(stale_ids))
+            )
+            self.db.commit()
+        return len(stale_ids)

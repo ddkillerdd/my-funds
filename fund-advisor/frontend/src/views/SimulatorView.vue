@@ -3,6 +3,34 @@
     <h2 class="page-title">策略回测 · 盈利能力分析</h2>
 
     <el-card shadow="never" class="input-card">
+      <div class="fetch-row">
+        <span class="label">拉取任意基金(仅本次模拟, 用后可清理)：</span>
+        <el-input
+          v-model="remoteCode"
+          placeholder="输入基金代码, 如 110022"
+          style="width: 180px"
+          clearable
+          @keyup.enter="fetchRemote"
+        />
+        <el-button type="success" plain :loading="fetching" @click="fetchRemote">
+          {{ fetching ? '拉取中...' : '拉取历史' }}
+        </el-button>
+        <span v-if="tmpFunds.length" class="tmp-groups">
+          <span class="label">已拉取临时基金：</span>
+          <el-tag
+            v-for="t in tmpFunds"
+            :key="t.fund_code"
+            size="small"
+            closable
+            class="tmp-tag"
+            @click="useTmpFund(t)"
+            @close="removeTmpFund(t)"
+          >
+            {{ t.fund_code }} {{ t.fund_name }}
+          </el-tag>
+        </span>
+      </div>
+      <el-divider />
       <div class="fund-row-header">
         <span class="label">选择基金与初始成本（金额即你的初始投入，可自由填写）</span>
         <el-button type="primary" size="small" @click="addFundRow">
@@ -250,7 +278,13 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { Plus, Delete } from '@element-plus/icons-vue'
-import { getSimulatorFunds, runSimulation } from '../api/index.js'
+import {
+  getSimulatorFunds,
+  runSimulation,
+  fetchRemoteFund,
+  getTmpFunds,
+  cleanupTmpFunds,
+} from '../api/index.js'
 
 use([
   LineChart, BarChart,
@@ -266,9 +300,65 @@ const loading = ref(false)
 const result = ref(null)
 const activeWindow = ref(90)
 
+// 临时基金(任意代码拉取)
+const remoteCode = ref('')
+const fetching = ref(false)
+const tmpFunds = ref([])
+
+async function loadTmpFunds() {
+  try {
+    tmpFunds.value = await getTmpFunds()
+    // 将临时基金并入可选列表(can_backtest=true)
+    for (const t of tmpFunds.value) {
+      if (!fundOptions.value.some((f) => f.fund_code === t.fund_code)) {
+        fundOptions.value.push({
+          fund_code: t.fund_code,
+          fund_name: t.fund_name,
+          latest_nav: null,
+          nav_days: t.nav_days,
+          can_backtest: true,
+        })
+      }
+    }
+  } catch {
+    /* interceptor */
+  }
+}
+
+async function fetchRemote() {
+  const code = (remoteCode.value || '').trim()
+  if (!code) return
+  fetching.value = true
+  try {
+    const t = await fetchRemoteFund(code)
+    remoteCode.value = ''
+    await loadTmpFunds()
+    // 自动加入一条回测行
+    fundRows.value.unshift({ fund_code: t.fund_code, amount: 5000 })
+  } catch {
+    /* interceptor */
+  } finally {
+    fetching.value = false
+  }
+}
+
+function useTmpFund(t) {
+  fundRows.value.unshift({ fund_code: t.fund_code, amount: 5000 })
+}
+
+async function removeTmpFund(t) {
+  try {
+    await cleanupTmpFunds(0)  // 用后即删
+    tmpFunds.value = tmpFunds.value.filter((x) => x.fund_code !== t.fund_code)
+  } catch {
+    /* interceptor */
+  }
+}
+
 onMounted(async () => {
   try {
     fundOptions.value = await getSimulatorFunds()
+    await loadTmpFunds()
   } catch {
     /* interceptor */
   }
@@ -453,6 +543,22 @@ const cumPnlOption = computed(() => {
 <style scoped>
 .page-title { margin-top: 0; }
 .input-card { margin-bottom: 16px; }
+.fetch-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.tmp-groups {
+  margin-left: 16px;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tmp-tag { cursor: pointer; }
+.tmp-tag:hover { opacity: 0.85; }
 .fund-row-header {
   display: flex;
   justify-content: space-between;
