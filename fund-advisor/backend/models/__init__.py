@@ -14,3 +14,5 @@ from backend.models.import_record import ImportRecord  # noqa: F401
 from backend.models.nav_history import FundNavHistory  # noqa: F401
 from backend.models.portfolio_snapshot import PortfolioSnapshot  # noqa: F401
 from backend.models.sim_tmp_fund import SimTmpFund  # noqa: F401
+from backend.models.adaptive_proposal import AdaptiveProposal  # noqa: F401
+from backend.models.strategy_override import StrategyOverride  # noqa: F401

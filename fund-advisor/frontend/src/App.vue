@@ -39,6 +39,10 @@
           <el-icon><Histogram /></el-icon>
           <span>策略回测</span>
         </el-menu-item>
+        <el-menu-item index="/adaptive">
+          <el-icon><Aim /></el-icon>
+          <span>自适应优化</span>
+        </el-menu-item>
         <el-menu-item index="/calendar">
           <el-icon><Calendar /></el-icon>
           <span>收益日历</span>
@@ -71,6 +75,7 @@ import {
   MagicStick,
   Guide,
   Histogram,
+  Aim,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()

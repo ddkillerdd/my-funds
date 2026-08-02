@@ -293,6 +293,12 @@ import {
   fetchRemoteFund,
   getTmpFunds,
   cleanupTmpFunds,
+  runAdaptiveOptimize,
+  getAdaptiveTask,
+  getAdaptiveProposals,
+  approveAdaptiveProposal,
+  rejectAdaptiveProposal,
+  getAdaptiveOverrides,
 } from '../api/index.js'
 
 use([
@@ -319,6 +325,14 @@ const navWindowOptions = [
 const remoteCode = ref('')
 const fetching = ref(false)
 const tmpFunds = ref([])
+
+// ---- 自适应优化 (RFC-017) ----
+const adaptiveLoading = ref(false)
+const adaptiveTaskId = ref(null)
+const adaptiveProgress = ref('')
+const adaptiveLookback = ref(600)
+const adaptiveProposals = ref([])
+const adaptiveOverrides = ref([])
 
 async function loadTmpFunds() {
   try {
@@ -374,6 +388,7 @@ onMounted(async () => {
   try {
     fundOptions.value = await getSimulatorFunds()
     await loadTmpFunds()
+    await loadAdaptive()
   } catch {
     /* interceptor */
   }
@@ -447,6 +462,73 @@ function adviceType(level) {
 }
 function adviceTagType(level) {
   return { success: 'success', warning: 'warning', danger: 'danger', info: 'info' }[level] || 'info'
+}
+
+// ---- 自适应优化方法 (RFC-017) ----
+async function loadAdaptive() {
+  try {
+    adaptiveProposals.value = await getAdaptiveProposals()
+    adaptiveOverrides.value = await getAdaptiveOverrides()
+  } catch { /* interceptor */ }
+}
+
+async function runAdaptive() {
+  if (adaptiveLoading.value) return
+  adaptiveLoading.value = true
+  adaptiveTaskId.value = null
+  try {
+    const funds = fundRows.value
+      .filter((r) => r.fund_code)
+      .map((r) => r.fund_code)
+    const params = { lookback_days: adaptiveLookback.value }
+    if (funds.length) {
+      params.fund_codes = funds
+    }
+    const { task_id } = await runAdaptiveOptimize(params)
+    adaptiveTaskId.value = task_id
+    pollAdaptive(task_id)
+  } catch { /* interceptor */ } finally {
+    adaptiveLoading.value = false
+  }
+}
+
+async function pollAdaptive(taskId, tries = 0) {
+  try {
+    const st = await getAdaptiveTask(taskId)
+    adaptiveTaskId.value = taskId
+    adaptiveProgress.value = st.progress || ''
+    if (st.status === 'done' || st.status === 'error') {
+      adaptiveTaskId.value = null
+      adaptiveLoading.value = false
+      if (st.status === 'done') await loadAdaptive()
+    } else if (tries < 120) {
+      setTimeout(() => pollAdaptive(taskId, tries + 1), 3000)
+    }
+  } catch {
+    adaptiveTaskId.value = null
+    adaptiveLoading.value = false
+  }
+}
+
+async function approveProposal(p) {
+  try {
+    await approveAdaptiveProposal(p.id, '')
+    await loadAdaptive()
+  } catch { /* interceptor */ }
+}
+
+async function rejectProposal(p) {
+  try {
+    await rejectAdaptiveProposal(p.id, '')
+    await loadAdaptive()
+  } catch { /* interceptor */ }
+}
+
+function clsLabel(cls) {
+  return { low: '低波动', medium: '中波动', high: '高波动' }[cls] || cls
+}
+function riskTag(cls) {
+  return { low: 'success', medium: 'warning', high: 'danger' }[cls] || 'info'
 }
 
 async function run() {

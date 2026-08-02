@@ -109,10 +109,38 @@ class AdvisorService:
             },
         )
         analyzer = Analyzer(config)
+        # RFC-017 自适应: 为各持仓基金注入经用户确认(approved)的生效策略参数;
+        # 无则用保守默认(Analyzer 内部处理)。透明展示到报告, 便于核对。
+        _strategy_map = {}
+        _strategy_shown = {}
+        try:
+            from backend.services.adaptive_service import AdaptiveService
+            _adaptive = AdaptiveService(self.db)
+            for h in portfolio_input.holdings:
+                try:
+                    _cfg = _adaptive.get_active_config(h.fund_code)
+                except Exception:  # noqa: BLE001
+                    continue
+                _strategy_map[h.fund_code] = _cfg
+                _strategy_shown[h.fund_code] = {
+                    "risk_class": _cfg.risk_class,
+                    "target_vol": _cfg.target_vol,
+                    "friction_band_pp": _cfg.friction_band_pp,
+                    "source": _cfg.source,
+                    "note": _cfg.note,
+                }
+            analyzer = Analyzer(config, strategy_configs=_strategy_map)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("adaptive strategy injection failed, use defaults: %s", e)
+            analyzer = Analyzer(config)
         report = analyzer.analyze(portfolio_input)
 
         # 3. 转换为 API JSON
         result = self._report_to_api_json(report, t0)
+
+        # RFC-017: 报告展示当前生效的策略参数(自适应透明性)
+        if _strategy_shown:
+            result["adaptive_strategy"] = _strategy_shown
 
         # RFC-012: 在线学习反馈 → 附加到报告（报告可见的历史命中率）
         try:

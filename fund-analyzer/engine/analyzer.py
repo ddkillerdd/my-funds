@@ -88,8 +88,16 @@ CST = timezone(timedelta(hours=8))
 class Analyzer:
     """Main analysis engine."""
 
-    def __init__(self, llm_config: LLMConfig):
+    def __init__(self, llm_config: LLMConfig,
+                 strategy_configs: Optional[Dict[str, "FundStrategyConfig"]] = None):
+        """
+        Args:
+            llm_config: LLM 配置。
+            strategy_configs: 按 fund_code 映射的、经批准生效的策略参数(RFC-017 自适应)。
+                为 None 或缺失某基金时, 用保守默认参数(行为与之前完全一致)。
+        """
         self.llm = LLMClient(llm_config)
+        self.strategy_configs = strategy_configs or {}
         self.config = llm_config
 
     def analyze(self, portfolio: PortfolioInput) -> AnalysisReport:
@@ -299,6 +307,7 @@ class Analyzer:
                     fd.technical_view,
                     model_sources=model_sources,
                     total_mv=float(ground.get("total_market_value", 0) or 0),
+                    strategy_config=self.strategy_configs.get(holding.fund_code),
                 )
             else:
                 # All views failed → pure calculation fallback
@@ -618,6 +627,7 @@ class Analyzer:
         technical: TechnicalViewDiagnosis,
         model_sources: Optional[Dict[str, str]] = None,
         total_mv: float = 0.0,
+        strategy_config: Optional["FundStrategyConfig"] = None,
     ) -> DebateSummary:
         """Run debate synthesis with model-source-aware prompt.
 
@@ -634,7 +644,11 @@ class Analyzer:
         # mv_ratio 是百分数(如 31.5=31.5%), build_position_action 需要十进制(0~1)
         mv_pct = float(qi.mv_ratio or 0.0)
         current_weight = mv_pct / 100.0
-        quant_action = build_position_action(qi, regime, current_weight, total_mv=total_mv)
+        _kw = {"total_mv": total_mv}
+        if strategy_config is not None:
+            _kw["target_vol"] = strategy_config.target_vol
+            _kw["friction_band_pp"] = strategy_config.friction_band_pp
+        quant_action = build_position_action(qi, regime, current_weight, **_kw)
 
         try:
             # Build model-source-enriched prompt

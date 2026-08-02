@@ -195,5 +195,34 @@ export function cleanupTmpFunds(keepDays = 1) {
   return api.post('/simulator/cleanup-tmp', null, { params: { keep_days: keepDays } })
 }
 
+// ---- Adaptive (RFC-017: 自适应参数优化 · WFA) ----
+
+export function runAdaptiveOptimize(params = {}) {
+  return api.post('/adaptive/run', null, { params })
+}
+
+export function getAdaptiveTask(taskId) {
+  return api.get(`/adaptive/tasks/${taskId}`)
+}
+
+export function getAdaptiveProposals(status) {
+  return api.get('/adaptive/proposals', { params: status ? { status } : {} })
+}
+
+export function approveAdaptiveProposal(id, note = '') {
+  return api.post(`/adaptive/proposals/${id}/approve`, null, { params: { note } })
+}
+
+export function rejectAdaptiveProposal(id, note = '') {
+  return api.post(`/adaptive/proposals/${id}/reject`, null, { params: { note } })
+}
+
+export function getAdaptiveOverrides() {
+  return api.get('/adaptive/overrides')
+}
+
+export function resetAdaptiveOverride(riskClass) {
+  return api.post(`/adaptive/overrides/${riskClass}/reset`)
+}
 
 export default api
