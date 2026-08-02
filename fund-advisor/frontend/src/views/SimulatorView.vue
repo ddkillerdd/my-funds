@@ -92,6 +92,15 @@
         </el-button>
       </div>
 
+      <div class="param-row">
+        <span class="label">策略参数：</span>
+        <span class="label-sm">目标波动率 target_vol</span>
+        <el-input-number v-model="targetVol" :min="0.05" :max="0.35" :step="0.01" size="small" style="width:110px" />
+        <span class="label-sm">换手带 friction</span>
+        <el-input-number v-model="frictionBand" :min="2" :max="15" :step="1" size="small" style="width:100px" />
+        <span class="label-sm tip-inline">默认 0.15/5；可填自适应优化采纳的参数(如 0.10/10)对比验证</span>
+      </div>
+
       <div class="tip-text">
         纯量化回放（RFC-016）：把你的这套买卖信号放到历史行情里重跑，验证它到底赚不赚钱。
         模拟采用理想化执行（无费率/当日即时），侧重验证信号方向，不构成投资建议。
@@ -313,6 +322,9 @@ const selectedWindows = ref([30, 90, 365])
 const loading = ref(false)
 const result = ref(null)
 const activeWindow = ref(90)
+// RFC-017 自定义策略参数(默认保守; 可填自适应优化采纳的参数做对比验证)
+const targetVol = ref(0.15)
+const frictionBand = ref(5.0)
 // 第4张图(净值走势)周期切换: 6M / 1Y / ALL
 const navWindow = ref('1Y')
 const navWindowOptions = [
@@ -543,6 +555,8 @@ async function run() {
     result.value = await runSimulation({
       funds,
       windows: selectedWindows.value,
+      target_vol: targetVol.value,
+      friction_band_pp: frictionBand.value,
     })
     activeWindow.value = selectedWindows.value.includes(90)
       ? 90
@@ -731,6 +745,8 @@ const navTrendOption = computed(() => {
   margin-bottom: 10px;
 }
 .label { color: #606266; font-size: 14px; }
+.label-sm { color: #909399; font-size: 12px; margin-left: 4px; }
+.tip-inline { color: #c0c4cc; }
 .amount-suffix { color: #909399; font-size: 13px; }
 .param-row {
   display: flex;
