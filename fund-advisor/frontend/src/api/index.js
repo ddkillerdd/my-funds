@@ -171,4 +171,15 @@ export function screenFunds(payload) {
   return api.post('/advisor/recommend/screen', payload)
 }
 
+// ---- Simulator (RFC-016: 组合策略回测 + 盈利能力 + 优化建议) ----
+
+export function runSimulation(payload) {
+  return api.post('/simulator/run', payload)
+}
+
+export function getSimulatorFunds() {
+  return api.get('/simulator/funds')
+}
+
+
 export default api

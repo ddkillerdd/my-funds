@@ -1,7 +1,7 @@
 """API router - aggregates all route modules."""
 
 from fastapi import APIRouter
-from backend.api import dashboard, funds, holdings, imports, nav, analysis, advisor, scheduler, recommend, backtest
+from backend.api import dashboard, funds, holdings, imports, nav, analysis, advisor, scheduler, recommend, backtest, simulator
 
 api_router = APIRouter(prefix="/api")
 
@@ -13,5 +13,6 @@ api_router.include_router(nav.router, prefix="/nav", tags=["nav"])
 api_router.include_router(analysis.router, prefix="/analysis", tags=["analysis"])
 api_router.include_router(advisor.router, prefix="/advisor", tags=["advisor"])
 api_router.include_router(backtest.router, prefix="/backtest", tags=["backtest"])
+api_router.include_router(simulator.router, prefix="/simulator", tags=["simulator"])
 api_router.include_router(recommend.router, prefix="/advisor/recommend", tags=["recommend"])
 api_router.include_router(scheduler.router, prefix="/scheduler", tags=["scheduler"])

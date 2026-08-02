@@ -9,6 +9,7 @@ import CalendarView from '../views/CalendarView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import AdvisorView from '../views/AdvisorView.vue'
 import RecommendView from '../views/RecommendView.vue'
+import SimulatorView from '../views/SimulatorView.vue'
 
 const routes = [
   {
@@ -28,6 +29,12 @@ const routes = [
     name: 'Recommend',
     component: RecommendView,
     meta: { title: '荐基 & 择时' },
+  },
+  {
+    path: '/simulator',
+    name: 'Simulator',
+    component: SimulatorView,
+    meta: { title: '策略回测' },
   },
   {
     path: '/holdings',
