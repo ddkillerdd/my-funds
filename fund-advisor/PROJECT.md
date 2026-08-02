@@ -50,6 +50,21 @@ FundAdvisor 是基于开源项目 **Fund-Portfolio-Tracker** 改造的个人基�
 
 > ⚠️ **免责声明**：本项目仅为辅助分析工具，不构成投资建议，投资决策请自行判断，盈亏自负。
 
+### 1.1 与 fund-analyzer 的关系（monorepo）
+
+FundAdvisor 是 **`my-funds` monorepo** 下的 Web 应用层，其 AI 决策内核来自同仓的 **`fund-analyzer`**（纯 Python 引擎库）。
+
+```
+my-funds/  (Git 仓库根 = github.com/ddkillerdd/my-funds)
+├── fund-advisor/    ← 本应用 (backend :8200 + frontend :8201)
+└── fund-analyzer/   ← 分析引擎 (量化/荐基/择时/决策/回测)
+```
+
+- **调用方式**：`backend/services/*` 通过 `sys.path.insert(0, ".../fund-analyzer")` 注入后 `from engine.xxx import ...`。这不是正规包依赖，而是同一台服务器的源码桥接。
+  ⚠️ **已知改进项**：硬编码绝对路径 `/root/.openclaw/workspace/fund-analyzer`，换机器/容器化需改（或用 PYTHONPATH / install -e 替代）。
+- **决策铁律**：LLM 只解读不评分，量化层(fund-analyzer)先行。<详见 `fund-analyzer/ARCHITECTURE.md` 与 `fund-advisor/ARCHITECTURE.md`>
+- **文档分布**：引擎层 RFC-005~016 在 `fund-analyzer/docs/`；应用层 RFC-010~012 在 `fund-advisor/docs/`。RFC-014(决策引擎)双项目共用，唯一权威在 fund-analyzer，本侧为软链。
+
 ---
 
 ## 2. 部署环境与前置条件

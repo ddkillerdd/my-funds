@@ -86,7 +86,7 @@ FundAdvisor (调用方)
 fund-analyzer/
 ├── README.md              # 本文
 ├── DESIGN.md              # 完整设计文档 (调研、架构、Schema)
-├── REQUIREMENTS.md
+├── ARCHITECTURE.md        # 引擎架构总览 (模块地图/数据流/分层)
 ├── engine/
 │   ├── models.py          # 数据类定义
 │   ├── quant.py           # 量化指标 (32项)
@@ -113,8 +113,12 @@ fund-analyzer/
 | 市场数据层 RFC-009 Phase C | ✅ 已实现 `engine/market_data.py` | docs/RFC-009 |
 | 荐基引擎 RFC-008 | ✅ 已实现 `engine/screener.py` + `screen_runner.py` | docs/RFC-008 |
 | 重构总纲 RFC-009 | ✅ 已落地 | docs/RFC-009 |
+| 确定性动作决策 RFC-013 | ✅ 已实现 `engine/decision.py` | docs/RFC-013 |
+| 决策引擎 RFC-014 (共用) | ✅ 已实现 | docs/RFC-014 |
+| 组合策略回测 RFC-016 | ✅ 已实现 `engine/simulator.py` | docs/RFC-016 |
 
-测试：`pytest tests/` — 99 个用例全绿（含 timing 17 / screener 15 / market_data 9）。
+测试：`pytest tests/` — 101 个用例全绿。
+架构见 `ARCHITECTURE.md`。
 
 ## 文档索引
 
@@ -124,3 +128,6 @@ fund-analyzer/
 - `docs/RFC-007-entry-timing-recommendation.md` — 入场时机推荐
 - `docs/RFC-008-fund-screener.md` — 荐基引擎
 - `docs/RFC-009-recommendation-architecture.md` — 重构总纲
+- `docs/RFC-013-action-determinism.md` — 确定性动作决策
+- `docs/RFC-014-position-decision-engine.md` — 决策引擎(双项目共用,唯一权威)
+- `docs/RFC-016-portfolio-simulator.md` — 组合策略回测
