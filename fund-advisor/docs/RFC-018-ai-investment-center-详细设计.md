@@ -5,7 +5,7 @@
 
 ---
 
-## 1. 数据表设计 (SQLAlchemy, 新增 3 表)
+## 1. 数据表设计 (SQLAlchemy, 新增 4 表)
 
 ### 1.1 `fund_candidate` — 全市场基金候选池
 ```python
@@ -59,6 +59,26 @@ class PlanTranche(Base):
     amount = Column(Numeric(14,2), default=None)    # 实际投入金额
 ```
 
+### 1.4 `plan_holding` — 计划持仓明细(每个基金盈亏分开记录)
+> 用户决定: 每个计划的每只基金**成本/份额/浮盈分开记录**, 独立核算, 不与全局 holdings 混账。
+```python
+class PlanHolding(Base):
+    __tablename__ = "plan_holding"
+    id = Column(BigInteger, primary_key=True)
+    plan_id = Column(BigInteger, ForeignKey("portfolio_plan.id"), index=True)
+    fund_code = Column(String(10), index=True)
+    fund_name = Column(String(200))
+    # 本次计划累计投入该基金
+    total_cost = Column(Numeric(14,2), default=0)   # 已投入成本
+    total_units = Column(Numeric(16,4), default=0)  # 累计份额(按各批成交净值折算)
+    avg_cost = Column(Numeric(10,4), default=0)     # 平均成本 = total_cost/total_units
+    last_nav = Column(Numeric(10,4), default=None)  # 最近净值(每日顾问更新)
+    last_update = Column(DateTime, default=None)
+    created_at / updated_at
+```
+- **作用**: 每日顾问跟踪 plan 时, 直接读 plan_holding 算**该计划的浮盈**(`(last_nav-avg_cost)×total_units`), 独立于全局 holdings。
+- 明细流水(每批买入)可再按需落 `plan_holding_txn` 表(先不建, 需要时再拆)。
+
 ---
 
 ## 2. 算法设计
@@ -66,30 +86,52 @@ class PlanTranche(Base):
 ### 2.1 每份金额 & 分批(核心公式)
 ```
 unit = total_budget / 100            # 每份金额
-# 分 100 份, 每批建议份数由择时信号决定:
+# 分 100 份, 每批建议份数由组合级择时信号决定:
 #   - 估值低分位(机会区) → 一批 10-20 份 (多投)
 #   - 估值中性         → 一批 5-10 份 (正常)
 #   - 估值高/avoid     → 0 份, 暂停(耐心等)
-# 配比落地: fund_i 的金额 = 批次金额 × weight_pct_i
+# 计划总时长: 建议 3-6 个月建完(行业惯例), 可配; 批次日期按周/双周生成, 遇节假日顺延。
 ```
+**分批金额分配到单只基金(问题2明确)**:
+- 每批总金额 = `本批份数 × unit`;
+- 默认按配比权重等比分配: `fund_i 本批金额 = 本批总金额 × weight_pct_i`;
+- 叠加**单只择时门控**: 若某只基金当前择时信号 = `avoid`(该基金自身估值过高/情绪过热), 则当批**跳过该只**, 其份额按加权比例分给其余仍可投的基金(确保本批总额投满、不浪费机会);
+- 本轮未投的基金当其信号转好时在后续批次补投。
 
-### 2.2 配比权重(复用 + 风控约束)
+### 2.2 组合级择时(扩充, 解决"择时是单只、计划是组合"缺口)
+- `dca_planner` 是单只接口, 但计划是组合 → 需要一层组合级择时聚合:
+  - 组合信号 = 各持仓基金择时信号按配比加权汇总;
+  - 判定: 多数(≥60%权重)基金为 buy→ 本批投宽松档(10-20份); 中性→正常档(5-10份); 多数 avoid→暂停批(0份);
+  - 供 AI 解读层再补充"当前市场环境"措辞。
+
+### 2.3 配比权重(复用 + 风控约束)
 - 基线: `suggested_ratio_pct`(screener 现成)。
 - 风控约束:
   - 单只上限 25%, 下限 5%; 合计 = 100%。
+  - **禁止重复(用户决定)**: 规则预筛阶段直接**剔除用户已重仓持有的基金**(依据全局 holdings 在投的), 不允许计划重复买入同一只 → 避免过度集中;
+    - 判定: 不在 holdings 中(尚未持有) → 可入; 已持有 → 硬过滤出候选, AI 荐基也不得选(提示词约束)。
   - 高风险类(商品/行业/高波动)按 risk_profile 归一缩放:
     - conservative: 高风险×0.5, 债券/稳健权重上浮
     - aggressive: 高风险×1.2
 - 归一化: `w_i / Σw_i × 100` 保证总和 100%。
 
-### 2.3 回测验证(复用 simulator)
+### 2.4 回测验证(复用 simulator)
 - 输入: `{funds: [{code, amount = total_budget×weight}], windows, target_vol, friction}`
-- 输出直接映射 simulator 现有返回 + 新增:
+- 输出直接映射 simulator 现有返回 + 新增指标(基于引擎已产出的 `daily` 序列可算, 无需改引擎内核):
   ```
-  max_drawdown_recovery_days  # 最大回撤修复时长(借鉴雪球)
-  win_rate                    # 盈利概率(若引擎可算)
+  max_drawdown_recovery_days   # 最大回撤修复时长(借鉴雪球)
+  win_rate                     # 盈利概率
   ```
-- 双路径: 一次性(全部按初始配比) vs 每月定投(每期等额) → 对比展示(借鉴 Wallible)。
+- **回撤修复时长 `max_drawdown_recovery_days` 算法**:
+  - 沿 `daily` 序列遍历总市值, 记录每段"从峰顶回落→重新涨回峰顶"的交易日跨度;
+  - 取**最深处那次回撤**(与现有 max_drawdown_pct 对应的那一段), 回吐它到"恢复至原峰顶"所需自然日数(兼容非交易日则按自然日/交易日口径标注);
+  - 若回测期结束仍未回到峰顶 → 记为 `null` + 文案"仍处回撤修复中"(诚实披露)。
+- **盈利概率 `win_rate` 算法**:
+  - 以 `daily` 序列逐日滚动:**按该日累计收益/总盈亏是否 >0**, 正向天数 ÷ 总天数 × 100%;
+  - 口径 = "历史任一时点持有该方案为正的概率", 非"胜率"或"未来预测" → 展示时注明口径, 避免误导。
+- **双路径对比(借鉴 Wallible)**:
+  - 一次性: 全部预算按初始配比在首日买入(现有 simulator 即可);
+  - 每月定投: 预算等额分摊到 N 期(如每月一期), 每期按当期配比买入, 逐期累积市值 → 需新增一个轻量定投回测封装(复用现有净值序列, 只改资金投入节奏, 不改决策内核)。
 
 ---
 
@@ -106,10 +148,15 @@ unit = total_budget / 100            # 每份金额
 ### 编排核心 `PlanService.create_plan(wizard)`:
 ```
 1. pool 拉取候选 → recommend(Top5) → allocate(weights) → backtest(验证)
+   (recommend 规则层已剔除已重仓基金 —— 禁止重复)
 2. 生成 tranches(100份 + 择时) → 存 portfolio_plan(draft)
 3. 前端展示完整方案
-4. 用户 confirm → 逐批建仓(调 simple_import 扣余额) → status=active
-5. 该 plan 基金进入每日顾问跟踪列表
+4. 用户 confirm → 逐批建仓:
+   a. 每只基金按 plan 单独写 plan_holding(累计成本/份额/平均成本), 独立核算浮盈
+   b. 同时写全局 holdings(用于每日顾问整体分析), 但 plan 盈亏看 plan_holding
+   c. 扣余额(used+/remaining-) → tranche 置 executed
+   → status=active
+5. 该 plan 基金进入每日顾问跟踪列表(顾问按 plan_holding 报该计划浮盈)
 ```
 
 ---
@@ -123,6 +170,8 @@ unit = total_budget / 100            # 每份金额
 当前市场环境:{可选: 大盘情绪/风格轮动} (由规则层提供)
 
 任务: 挑选现阶段【最适合入场】的 3-5 只, 输出严格 JSON:
+
+【硬约束】候选列表已剔除你已重仓的基金; 你**不得推荐任何已持有的基金**(避免重复建仓/过度集中)。
 {
   "picks": [{
     "fund_code":"...", "reason":"为什么现在适合入场(人话)", 
@@ -175,7 +224,7 @@ Step 6 确认入场: 完整方案总览 → "确认建仓"(写持仓)
 | screener.screen_funds | 规则预筛层(②) |
 | timing.dca_planner | 分批择时(⑤) |
 | simulator + backtest | 回测验证(④, 加修复时长字段) |
-| holding.simple_import | 确认建仓(⑥) |
+| holding.simple_import | 全局 holdings 写入(⑥); 计划盈亏另行写 plan_holding 独立核算 |
 | advisor_service | 建仓后自动跟踪(⑥→锦上添花) |
 | adaptive(WFA) | 方案参数长期优化 |
 | sim_tmp_fund | 组合基金净值按需拉取缓存思路 |
@@ -183,13 +232,13 @@ Step 6 确认入场: 完整方案总览 → "确认建仓"(写持仓)
 ---
 
 ## 7. 开发检查清单 (每期验收)
-- [ ] P0 后端: 3 新表 + FundPoolService 池机制
-- [ ] P0 后端: 6 个 plan API 编排
-- [ ] P0 后端: AI 荐基提示词(msg 已就绪)
+- [ ] P0 后端: 4 新表(含 plan_holding) + FundPoolService 池机制
+- [ ] P0 后端: 10 个 plan API 编排(池×2+荐基+配比+回测+任务轮询+分批+确认+列表+详情)
+- [ ] P0 后端: AI 荐基提示词(msg 已就绪, 含"禁止重复/已持仓"硬约束)
 - [ ] P0 前端: PlanWizard 六步
 - [ ] P1: 回撤修复时长 / 定投对比指标
-- [ ] P1: 确认建仓扣余额 + 计划状态机
-- [ ] P1: 每日顾问接入 plan(自动跟踪)
+- [ ] P1: 确认建仓(写 plan_holding 独立核算 + 扣余额) + 计划状态机
+- [ ] P1: 每日顾问接入 plan(按 plan_holding 报该计划浮盈, 自动跟踪)
 - [ ] P2: 组合看板/止盈提醒/情景压力测试
 
 → 下一步: 开发计划(RFC-018-开发计划), 分期排期。

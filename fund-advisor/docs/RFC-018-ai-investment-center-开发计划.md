@@ -22,7 +22,7 @@ Phase 3  增强: 指标完善 + 组合看板 + 可选扩展
 可用的全市场候选基金池 + 新增表。
 
 ### 交付
-- [ ] 3 张新表: `fund_candidate` / `portfolio_plan` / `plan_tranche` (models + migration)
+- [ ] 4 张新表: `fund_candidate` / `portfolio_plan` / `plan_tranche` / `plan_holding` (models + migration)
 - [ ] `FundPoolService`:
   - 温启动: 拉天天基金全市场列表 → 建候选池(分批, 避免超时)
   - 增量刷净值(nav_service 复用)
@@ -42,9 +42,9 @@ Phase 3  增强: 指标完善 + 组合看板 + 可选扩展
 
 ### 交付
 - [ ] `PlanRecommenderService`: 规则预筛(Top20) → AI研判(Top5 + 理由)
-- [ ] `PlanAllocatorService`: 配比权重 + 风控约束(上限25%/下限5%/归一化)
+- [ ] `PlanAllocatorService`: 配比权重 + 风控约束(上限25%/下限5%/归一化 + **禁止重复: 剔除已持仓基金**)
 - [ ] `PlanBacktestService`: 桥接 simulator + 异步任务 + 回撤修复时长
-- [ ] 后端 6 个 plan API(见详细设计 §6)
+- [ ] 后端 10 个 plan API(见详细设计 §6; 池×2+荐基+配比+回测+任务轮询+分批+确认+列表+详情)
 - [ ] 前端 `PlanWizard` 前 4 步(预算偏好 → AI荐基 → 配比 → 回测验证)
 
 ### 验收标准
@@ -63,8 +63,8 @@ Phase 3  增强: 指标完善 + 组合看板 + 可选扩展
 ### 交付
 - [ ] `PlanService` 编排(create/confirm/tranche): 100份拆法 + 择时信号分批
 - [ ] 分批计划展示(Step 5)
-- [ ] 确认入场: 逐批调用 `simple_import` 建仓, **扣余额不超支**, 计划状态机 draft→active→completed
-- [ ] 建仓后基金自动进每日顾问跟踪列表
+- [ ] 确认入场: 逐批调用 `simple_import` 建仓, 同时每只基金写 `plan_holding`(累计成本/份额/平均成本独立核算盈亏), **扣余额不超支**, 计划状态机 draft→active→completed
+- [ ] 建仓后基金自动进每日顾问跟踪列表(顾问按 plan_holding 报该计划浮盈)
 - [ ] 前端 Step 6 确认 + 我的计划管理
 
 ### 验收标准
