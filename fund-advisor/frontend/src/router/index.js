@@ -8,7 +8,6 @@ import AnalysisView from '../views/AnalysisView.vue'
 import CalendarView from '../views/CalendarView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import AdvisorView from '../views/AdvisorView.vue'
-import RecommendView from '../views/RecommendView.vue'
 import SimulatorView from '../views/SimulatorView.vue'
 import AdaptiveView from '../views/AdaptiveView.vue'
 
@@ -24,12 +23,6 @@ const routes = [
     name: 'Advisor',
     component: AdvisorView,
     meta: { title: 'AI 顾问' },
-  },
-  {
-    path: '/recommend',
-    name: 'Recommend',
-    component: RecommendView,
-    meta: { title: '荐基 & 择时' },
   },
   {
     path: '/simulator',

@@ -31,10 +31,6 @@
           <el-icon><MagicStick /></el-icon>
           <span>AI 顾问</span>
         </el-menu-item>
-        <el-menu-item index="/recommend">
-          <el-icon><Guide /></el-icon>
-          <span>荐基 &amp; 择时</span>
-        </el-menu-item>
         <el-menu-item index="/simulator">
           <el-icon><Histogram /></el-icon>
           <span>策略回测</span>
@@ -73,7 +69,6 @@ import {
   Calendar,
   Setting,
   MagicStick,
-  Guide,
   Histogram,
   Aim,
 } from '@element-plus/icons-vue'
