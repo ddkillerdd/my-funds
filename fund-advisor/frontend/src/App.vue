@@ -39,6 +39,10 @@
           <el-icon><Histogram /></el-icon>
           <span>策略回测</span>
         </el-menu-item>
+        <el-menu-item index="/plan">
+          <el-icon><TrendCharts /></el-icon>
+          <span>投资方案</span>
+        </el-menu-item>
         <el-menu-item index="/adaptive">
           <el-icon><Aim /></el-icon>
           <span>自适应优化</span>

@@ -225,4 +225,39 @@ export function resetAdaptiveOverride(riskClass) {
   return api.post(`/adaptive/overrides/${riskClass}/reset`)
 }
 
+// ─────────────── RFC-018 投资方案中心 ───────────────
+export function getPlanPool(params) {
+  return api.post('/plan/pool', params)
+}
+export function getPlanPoolCounts(params) {
+  return api.get('/plan/pool/counts', { params })
+}
+export function recommendPlan(payload) {
+  return api.post('/plan/recommend', payload)
+}
+export function allocatePlan(payload) {
+  return api.post('/plan/allocate', payload)
+}
+export function submitPlanBacktest(payload) {
+  return api.post('/plan/backtest', payload)
+}
+export function getPlanBacktestTask(taskId) {
+  return api.get(`/plan/backtest/tasks/${taskId}`)
+}
+export function createPlan(payload) {
+  return api.post('/plan', payload)
+}
+export function generatePlanTranches(id, payload) {
+  return api.post(`/plan/${id}/tranches`, payload)
+}
+export function confirmPlanEntry(id, payload) {
+  return api.post(`/plan/${id}/confirm`, payload)
+}
+export function listPlans(status) {
+  return api.get('/plan', { params: status ? { status } : {} })
+}
+export function getPlanDetail(id) {
+  return api.get(`/plan/${id}`)
+}
+
 export default api

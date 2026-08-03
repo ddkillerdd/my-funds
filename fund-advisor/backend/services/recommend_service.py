@@ -44,14 +44,23 @@ class RecommendService:
     #  工具：从 DB 读取持仓 NAV（分散化参照）
     # ─────────────────────────────────────────────
     def _portfolio_navs(self, days: int = 250) -> List[List[float]]:
-        """Read current active holdings' NAV series (floats) for diversification."""
+        """Read current active holdings' NAV series as NavPoint lists.
+
+        返回 List[List[NavPoint]](引擎 run_screener 契约);
+        每个元素是 NavPoint(date, nav)。
+        """
+        from engine.models import NavPoint
         from backend.services.nav_service import NavService
         ns = NavService(self.db)
         codes = ns.get_held_fund_codes()
-        out: List[List[float]] = []
+        out: List[List[NavPoint]] = []
         for code in codes:
             rows = ns.get_nav_history(code, days=days)
-            series = [r["unit_nav"] for r in rows if r.get("unit_nav")]
+            series = []
+            for r in rows:
+                if r.get("unit_nav") is None:
+                    continue
+                series.append(NavPoint(date=str(r.get("date") or ""), nav=float(r["unit_nav"])))
             if series:
                 out.append(series)
         return out
