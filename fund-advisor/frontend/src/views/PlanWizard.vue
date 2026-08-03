@@ -381,31 +381,50 @@ async function runRecommend() {
   recError.value = ''
   recResult.value = null
   recommending.value = true
-  try {
-    const res = await recommendPlan({
-      budget: budget.value,
-      risk_profile: riskProfile.value,
-      fund_types: fundTypes.value.length ? fundTypes.value : null,
-    })
-    const body = res?.data || {}
-    const picks = Array.isArray(body.picks) ? body.picks : []
-    if (!picks.length) {
-      // 区分"真的无候选" vs "响应异常/池未就绪"
-      recError.value = body.detail || body.error
-        ? (body.detail || body.error)
-        : (Object.keys(body).length === 0
-            ? '荐基服务响应异常(可能超时或服务重启)，请稍后重试'
-            : '当前没有推荐候选(候选可能都已持有或池未温启动)，可重试或稍后再试')
+  // 空响应时自动重试(偶发 proxy/长请求空 body, 快路径已验证稳定成功)
+  const maxRetry = 2
+  let body = null
+  let rawStatus = '?'
+  for (let attempt = 0; attempt <= maxRetry; attempt++) {
+    try {
+      const res = await recommendPlan({
+        budget: budget.value,
+        risk_profile: riskProfile.value,
+        fund_types: fundTypes.value.length ? fundTypes.value : null,
+      })
+      rawStatus = res?.status ?? '?'
+      const b = res?.data ?? {}
+      const picks = Array.isArray(b.picks) ? b.picks : []
+      const isEmptyResp = typeof b === 'object' && b !== null && Object.keys(b).length === 0
+      // 拿到有效结果(有picks 或 明确业务报错), 直接采用
+      if (picks.length || (b?.detail || b?.error)) { body = b; break }
+      // 空响应且非最后尝试 -> 重试
+      if (isEmptyResp && attempt < maxRetry) {
+        await new Promise(r => setTimeout(r, 1500))
+        continue
+      }
+      body = b
+      break
+    } catch (e) {
+      // 网络异常: 非最后尝试则重试
+      if (attempt < maxRetry) { await new Promise(r => setTimeout(r, 1500)); continue }
+      recError.value = e?.response?.data?.detail || e.message || '荐基失败'
+      recommending.value = false
       return
     }
-    recResult.value = body
-    Object.keys(selectedCodes).forEach((k) => delete selectedCodes[k])
-    picks.forEach((p) => { selectedCodes[p.fund_code] = true })
-  } catch (e) {
-    recError.value = e?.response?.data?.detail || e.message || '荐基失败'
-  } finally {
-    recommending.value = false
   }
+  const picks = Array.isArray(body?.picks) ? body.picks : []
+  if (!picks.length) {
+    recError.value = body?.detail || body?.error
+      ? (body.detail || body.error)
+      : '荐基服务响应异常(可能超时或服务重启)，请稍后重试'
+    recommending.value = false
+    return
+  }
+  recResult.value = body
+  Object.keys(selectedCodes).forEach((k) => delete selectedCodes[k])
+  picks.forEach((p) => { selectedCodes[p.fund_code] = true })
+  recommending.value = false
 }
 
 function toAllocate() {
