@@ -279,15 +279,148 @@ class CalendarService:
             trade_dates=[],
         )
 
-    def get_day_detail(self, target_date: date) -> CalendarDayResponse:
-        """Return full day detail: summary, per-account assets, trades, per-holding PnL."""
-        imports = self._load_import_timeline()
-        if not imports:
+    def _day_detail_no_import(self, target_date: date) -> CalendarDayResponse:
+        """无导入记录(手填持仓)时: 用当前持仓份额 + 当日净值现算当日详情。"""
+        holdings = self.db.query(FundHolding).filter(FundHolding.status != 0).all()
+        if not holdings:
             return CalendarDayResponse(
                 date=target_date,
                 summary=DayTotalSummary(total_market_value=ZERO),
                 accounts=[], trades=[], holdings=[],
             )
+
+        money_fund_codes = self._get_money_fund_codes()
+        fund_codes = list({h.fund_code for h in holdings})
+
+        nav_today_map = self._get_nav_on_date(fund_codes, target_date)
+        prev_nav_map = self._get_prev_nav(fund_codes, target_date)
+
+        results: list[CalendarDayDetail] = []
+        for h in holdings:
+            if h.shares is None or h.shares <= ZERO:
+                continue
+            shares = h.shares
+
+            nav_entry = nav_today_map.get(h.fund_code)  # (nav, actual_nav_date) or None
+            if nav_entry is not None:
+                nav, nav_today_date = nav_entry
+            elif h.fund_code not in money_fund_codes and h.nav_on_import is not None:
+                nav = h.nav_on_import
+                nav_today_date = None
+            else:
+                nav = None
+                nav_today_date = None
+
+            prev = prev_nav_map.get(h.fund_code)
+
+            pnl = None
+            pnl_pct = None
+            mv = None
+
+            if nav is not None:
+                if h.fund_code in money_fund_codes:
+                    mv = shares.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    pnl = (shares * nav / TEN_THOUSAND).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    pnl_pct = (nav / TEN_THOUSAND * 100).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                else:
+                    mv = (shares * nav).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    if prev is not None:
+                        pnl = (shares * (nav - prev)).quantize(
+                            Decimal("0.01"), rounding=ROUND_HALF_UP
+                        )
+                        if prev != ZERO:
+                            pnl_pct = ((nav - prev) / prev * 100).quantize(
+                                Decimal("0.01"), rounding=ROUND_HALF_UP
+                            )
+
+            results.append(
+                CalendarDayDetail(
+                    fund_code=h.fund_code,
+                    fund_name=h.fund_name,
+                    platform=h.platform,
+                    fund_account=h.fund_account,
+                    shares=shares,
+                    nav=nav,
+                    nav_date=nav_today_date,
+                    prev_nav=prev,
+                    import_nav=None,
+                    nav_mismatch=None,
+                    daily_pnl=pnl,
+                    daily_pnl_pct=pnl_pct,
+                    market_value=mv,
+                )
+            )
+
+        results.sort(
+            key=lambda x: (x.daily_pnl is None, -(x.daily_pnl or ZERO)),
+        )
+
+        total_mv = sum(
+            (r.market_value for r in results if r.market_value is not None), ZERO
+        )
+        pnl_vals = [r.daily_pnl for r in results if r.daily_pnl is not None]
+        total_pnl: Decimal | None = sum(pnl_vals, ZERO) if pnl_vals else None
+
+        day_pnl_pct: Decimal | None = None
+        if total_pnl is not None and (total_mv - total_pnl) != ZERO:
+            day_pnl_pct = (total_pnl / (total_mv - total_pnl) * 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+        summary = DayTotalSummary(
+            total_market_value=total_mv.quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            ),
+            total_daily_pnl=total_pnl.quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            ) if total_pnl is not None else None,
+            daily_pnl_pct=day_pnl_pct,
+        )
+
+        acct_mv: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        acct_pnl: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        acct_has_pnl: set[str] = set()
+        for r in results:
+            key = r.platform or ""
+            if r.market_value is not None:
+                acct_mv[key] += r.market_value
+            if r.daily_pnl is not None:
+                acct_pnl[key] += r.daily_pnl
+                acct_has_pnl.add(key)
+
+        accounts = [
+            AccountAsset(
+                platform=k,
+                market_value=acct_mv[k].quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                ),
+                daily_pnl=acct_pnl[k].quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                ) if k in acct_has_pnl else None,
+            )
+            for k in acct_mv
+        ]
+
+        return CalendarDayResponse(
+            date=target_date,
+            summary=summary,
+            accounts=accounts,
+            trades=[],
+            holdings=results,
+        )
+
+    def get_day_detail(self, target_date: date) -> CalendarDayResponse:
+        """Return full day detail: summary, per-account assets, trades, per-holding PnL."""
+        imports = self._load_import_timeline()
+        if not imports:
+            # 无导入记录(手填持仓)时: 用当前持仓份额 + 当日净值现算当日详情
+            return self._day_detail_no_import(target_date)
 
         baseline_date = imports[0].data_date
         if target_date < baseline_date:
