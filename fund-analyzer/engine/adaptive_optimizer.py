@@ -168,6 +168,10 @@ def _run_backtest(funds: List[dict], target_vol: float, friction_band_pp: float,
 # ---------------------------------------------------------------------------
 _TV_GRID = [0.08, 0.10, 0.12, 0.15, 0.18, 0.20, 0.22, 0.25]
 _FR_GRID = [3, 5, 7, 10]
+# 参与 WFA 优化的最小净值天数: 短于该值说明历史过短, 强行参与会把同风险类
+# 公共窗口(optimize_fund_class 里 min_len)拖短 → 训练/测试切块过小 → quant
+# 方差 ddof=0 → NaN。短历史基金仅从“优化样本”剔除, 不删用户持仓/净值。
+MIN_NAVS_FOR_WFA = 60
 # 训练段网格搜索的评估窗口: 只需相对排序选优, 不必全训练段, 显著提速
 _TRAIN_EVAL_WINDOW = 120
 
@@ -208,6 +212,22 @@ def optimize_fund_class(funds: List[dict],
             best_wfe=0.0, avg_test_excess_pct=0.0, best_max_drawdown=0.0,
             default_target_vol=DEFAULT_TARGET_VOL, default_friction_band_pp=FRICTION_BAND_PP,
             passed=False, reasons=["无净值数据"], notes=[])
+
+    # 剔除历史过短的基金(不参与 WFA 优化样本): 短历史会让同风险类公共窗口被
+    # 拖短 → 训练/测试切块过小 → quant 方差 ddof=0 → NaN。仅剔除优化样本,
+    # 不删用户持仓与净值。
+    short = [c for c, v in all_navs.items() if len(v) < MIN_NAVS_FOR_WFA]
+    for c in short:
+        all_navs.pop(c)
+    if short:
+        _log(f"已剔除短历史基金 {len(short)} 只(<{MIN_NAVS_FOR_WFA}天): {short}")
+    if not all_navs:
+        return AdaptiveProposal(
+            risk_class=risk_class or RiskClass.MED, fund_codes=[],
+            best_target_vol=DEFAULT_TARGET_VOL, best_friction_band_pp=FRICTION_BAND_PP,
+            best_wfe=0.0, avg_test_excess_pct=0.0, best_max_drawdown=0.0,
+            default_target_vol=DEFAULT_TARGET_VOL, default_friction_band_pp=FRICTION_BAND_PP,
+            passed=False, reasons=[f"优化样本过少(全部历史<{MIN_NAVS_FOR_WFA}天)"], notes=[f"短历史基金:{short}"])
 
     risk_class = risk_class or classify_fund(next(iter(all_navs.values())))
     _log(f"[{risk_class}] 分类完成, 基金数={len(all_navs)}")

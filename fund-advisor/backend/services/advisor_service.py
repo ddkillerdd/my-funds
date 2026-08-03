@@ -242,7 +242,12 @@ class AdvisorService:
             for h in fa_holdings:
                 h.mv_ratio = round(h.current_mv / total_mv * 100, 1)
 
-        return PortfolioInput(holdings=fa_holdings)
+        # RFC-020: 用户在前端设置的总资金(可变)作为绝对操作金额的定价基准;
+        # 未设置则退回 None(由引擎用当前总市值)。
+        from backend.services.config_service import get_total_capital
+        total_capital = get_total_capital(self.db)
+
+        return PortfolioInput(holdings=fa_holdings, total_capital=total_capital)
 
     def _load_holdings_from_db(self):
         """加载活跃持仓 (status=1) + 关联基金信息"""

@@ -299,6 +299,10 @@ class Analyzer:
 
             # === Debate (with model sources for cross-model comparison) ===
             if fd.trend_view and fd.risk_view and fd.value_view and fd.technical_view:
+                # RFC-020: 绝对操作金额的定价基准。用户设置了总资金(total_capital)时
+                # 用它(替代当前总市值 total_market_value), 让建议金额按用户愿投入的
+                # 总盘子而非仅当前持仓定价; 未设置则退回当前总市值。
+                _amount_scale = float(portfolio.total_capital) if portfolio.total_capital else float(ground.get("total_market_value", 0) or 0)
                 fd.debate_summary = self._debate_synthesis(
                     qi,
                     fd.trend_view,
@@ -306,7 +310,7 @@ class Analyzer:
                     fd.value_view,
                     fd.technical_view,
                     model_sources=model_sources,
-                    total_mv=float(ground.get("total_market_value", 0) or 0),
+                    total_mv=_amount_scale,
                     strategy_config=self.strategy_configs.get(holding.fund_code),
                 )
             else:

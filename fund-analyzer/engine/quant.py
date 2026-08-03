@@ -292,7 +292,14 @@ def compute_momentum(navs: np.ndarray, returns: np.ndarray) -> MomentumIndicator
     # Bollinger Bands (20, 2)
     if n >= 20:
         ma20 = _rolling_mean(navs, 20)
-        std20 = np.array([np.std(navs[max(0, i - 19):i + 1], ddof=1) for i in range(n)])
+        # 防 NaN: 窗口样本 <2 时 np.std(ddof=1) 触发 "Degrees of freedom <= 0"
+        # → RuntimeWarning + NaN。早期窗口样本不足置 NaN 不影响 (尾部 std20[-1]
+        # 始终是完整 20 窗口, 供 bollinger_upper/lower 使用)。
+        std20 = np.array([
+            float(np.std(navs[max(0, i - 19):i + 1], ddof=1))
+            if len(navs[max(0, i - 19):i + 1]) >= 2 else np.nan
+            for i in range(n)
+        ])
 
         mo.bollinger_mid = round(float(ma20[-1]), 6)
         mo.bollinger_upper = round(float(ma20[-1] + 2 * std20[-1]), 6)
@@ -349,7 +356,8 @@ def compute_risk(navs: np.ndarray, returns: np.ndarray, nav_history: List[NavPoi
 
     # Downside volatility
     neg_returns = returns[returns < 0]
-    if len(neg_returns) > 0:
+    # 防 NaN: len==1 时 np.std(ddof=1) 自由度=0 → RuntimeWarning + NaN。
+    if len(neg_returns) > 1:
         downside_vol = float(np.std(neg_returns, ddof=1))
         r.downside_volatility_pct = round(downside_vol * np.sqrt(trading_days_per_year) * 100, 2)
 
@@ -505,7 +513,8 @@ def compute_efficiency(returns: np.ndarray, risk: RiskIndicators) -> EfficiencyI
 
     # Sortino Ratio
     neg_returns = returns[returns < 0]
-    if len(neg_returns) > 0:
+    # 防 NaN: len==1 时 np.std(ddof=1) 自由度=0 → RuntimeWarning + NaN。
+    if len(neg_returns) > 1:
         downside_std = float(np.std(neg_returns, ddof=1))
         if downside_std > 0:
             e.sortino_ratio = round(float(excess_mean / downside_std * np.sqrt(trading_days_per_year)), 2)

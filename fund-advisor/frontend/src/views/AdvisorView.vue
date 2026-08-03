@@ -12,6 +12,19 @@
             <span v-if="activeReportTime" class="last-gen">
               当前报告: {{ activeReportTime }}
             </span>
+            <span class="capital-wrap">
+              <span class="capital-label">总资金(¥)</span>
+              <el-input-number
+                v-model="totalCapital"
+                :min="0"
+                :step="1000"
+                :controls="false"
+                size="small"
+                placeholder="未设置"
+                style="width: 130px"
+                @change="saveTotalCapital"
+              />
+            </span>
           </div>
         </el-col>
         <el-col :span="12" style="text-align: right">
@@ -373,6 +386,8 @@ const historySkip = ref(0)
 const hasMoreHistory = ref(false)
 const backtestStats = ref(null)
 const HISTORY_LIMIT = 20
+// RFC-020: 总资金(前端可调, 每次分析作为绝对金额定价基准)
+const totalCapital = ref(null)
 
 function healthColor(score) {
   if (score >= 70) return '#67c23a'
@@ -510,7 +525,37 @@ async function loadMoreHistory() {
   }
 }
 
+// RFC-020: 读取/保存总资金(前端可调, 下次分析动态生效)
+async function loadTotalCapital() {
+  try {
+    const resp = await fetch('/api/config/total-capital')
+    if (!resp.ok) return
+    const data = await resp.json()
+    totalCapital.value = data.total_capital != null ? data.total_capital : null
+  } catch {
+    // silent
+  }
+}
+async function saveTotalCapital(val) {
+  try {
+    const resp = await fetch('/api/config/total-capital', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: val, note: '用户前端设置总资金' }),
+    })
+    if (!resp.ok) throw new Error('保存失败')
+    const data = await resp.json()
+    totalCapital.value = data.total_capital
+    ElMessage.success('总资金已更新, 下次分析按新资金定价')
+  } catch (e) {
+    ElMessage.error('总资金保存失败: ' + e.message)
+  }
+}
+
 onMounted(async () => {
+  // RFC-020: 加载总资金配置
+  await loadTotalCapital()
+
   // RFC-012 backtest stats
   await loadBacktestStats()
 
@@ -566,6 +611,18 @@ onMounted(async () => {
 .last-gen {
   color: #409eff;
   font-size: 12px;
+}
+
+.capital-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+.capital-label {
+  font-size: 12px;
+  color: #606266;
+  white-space: nowrap;
 }
 
 .skeleton-card {
