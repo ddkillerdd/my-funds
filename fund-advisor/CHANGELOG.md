@@ -2,6 +2,28 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [7.1] - 2026-08-03 — RFC-020 长线分析增强（Phase 1 + Phase 2）
+
+### Added（Phase 1）
+- 自适应 WFA NaN 修复：quant.py 三处 `np.std(ddof=1)` 自由度=0→NaN 问题，加 `len>1` guard；adaptive_optimizer 加 `MIN_NAVS_FOR_WFA=60` 剔除短历史基金
+- 总资金动态配置：`app_config` key-value 表 + `GET/PUT /api/config/total-capital`，前端可调，作为绝对金额定价基准
+- 操作金额闭环：报告后端本有 `action_amount`（正加负减），前端操作建议卡片补渲染
+- 决策推送 cron 改 13:30（原 09:00），留 15:00 前决策窗口
+
+### Added（Phase 2）
+- 短线择时 `intraday.py`：腾讯行情（实时涨跌% + 5日线偏离）→ execution_advice，只出信号不改金额，报告新增 `intraday_view`
+- 市场基准对比 `index_bindings.py`：沪深300 500 天注入 `benchmark_nav_history`，报告新增 `benchmark.attached`，修复 peer_benchmark 挂载路径（fd.ground_truth）
+- 实际操作记录 `trade_execution`：表 + `/api/trade-execution/*` + 前端"我实际"下拉，记录建议 vs 实际偏差供校准
+
+### Changed
+- 行情数据源从 eastmoney 改为腾讯：eastmoney 对 Python httpx 做 TLS 指纹拦截（实时 push2/历史 push2his 都封，curl 却通），腾讯 gtimg.cn httpx 全通且稳定（覆盖 A 股指数 + 美股纳指）
+- 调度：`FundAdvisor 收盘前决策推送` = `30 13 * * 1-5`
+
+### Verified
+- 活 HTTP 端点真实分析：success=True, analysis_ok=True, 21 次 deepseek 0 失败非降级, 414s(6.9min)
+- 4 条 actions 带金额、intraday_view 4 基金（科创50 -5.08% 正确判"较佳买点"）、benchmark attached=true
+- 实际操作记录实测：建议“减仓 -¥27513” + 用户回填"照做" 正确对应存储
+
 ## [7.0] - 2026-08-01 — RFC-014 盈利导向决策引擎 v2（Signal→Position→Risk 三层闭环）
 
 > 设计文档：`fund-analyzer/docs/RFC-014-position-decision-engine.md`（重构唯一准绳，不受旧 RFC 约束）。
