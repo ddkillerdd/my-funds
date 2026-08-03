@@ -247,7 +247,25 @@ class AdvisorService:
         from backend.services.config_service import get_total_capital
         total_capital = get_total_capital(self.db)
 
-        return PortfolioInput(holdings=fa_holdings, total_capital=total_capital)
+        # RFC-020 块5: 市场基准对比 — 组合整体以沪深300为基准, 填充
+        # benchmark_nav_history 供 compute_peer_benchmark 用(波动/超额对比)。
+        # 抓取失败则静默跳过(基准对比是增强, 不影响主决策)。
+        benchmark_points = None
+        try:
+            from backend.services.index_bindings import fetch_benchmark_points
+            points = fetch_benchmark_points(limit=500)
+            if points:
+                benchmark_points = [
+                    NavPoint(date=d, nav=float(v)) for d, v in points if v is not None
+                ]
+        except Exception:  # noqa: BLE001
+            benchmark_points = None
+
+        return PortfolioInput(
+            holdings=fa_holdings,
+            total_capital=total_capital,
+            benchmark_nav_history=benchmark_points,
+        )
 
     def _load_holdings_from_db(self):
         """加载活跃持仓 (status=1) + 关联基金信息"""
@@ -630,6 +648,18 @@ class AdvisorService:
             # v3 新增字段
             "per_fund_diagnosis": per_fund_diagnosis,
 
+            # RFC-020 块3: 盘中短线(择时)信号 — 快捷参考, 不参与核心金额/权重
+            "intraday_view": self._build_intraday_view(report.per_fund_diagnosis),
+            # RFC-020 块5: 市场基准对比元信息
+            "benchmark": {
+                "name": "沪深300",
+                # peer_benchmark 挂在 QuantIndicators(fd.ground_truth) 上
+                "attached": any(
+                    getattr(fd.ground_truth, "peer_benchmark", None) is not None
+                    for fd in report.per_fund_diagnosis
+                ),
+            },
+
             # 元数据
             "generated_at": report.generated_at,
             "model": f"FundAnalyzer v3 ({report.model})",
@@ -652,6 +682,18 @@ class AdvisorService:
             },
             "engine_version": "v3",
         }
+
+    def _build_intraday_view(self, per_fund_diagnosis):
+        """RFC-020 块3: 为持仓拉盘中短线(择时)信号。
+        数据源腾讯(httpx 可用), 只产 execution_advice, 不参与核心金额。
+        失败/无映射基金静默跳过, 绝不中断报告。
+        """
+        try:
+            from backend.services.intraday import build_intraday_view
+            codes = [fd.fund_code for fd in per_fund_diagnosis] if per_fund_diagnosis else []
+            return build_intraday_view(codes)
+        except Exception:  # noqa: BLE001
+            return {}
 
     # ═══════════════════════════════════════════════════
     # v2 兼容 — 旧引擎保留

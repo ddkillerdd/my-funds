@@ -21,3 +21,4 @@ from backend.models.portfolio_plan import PortfolioPlan  # noqa: F401
 from backend.models.plan_tranche import PlanTranche  # noqa: F401
 from backend.models.plan_holding import PlanHolding  # noqa: F401
 from backend.models.app_config import AppConfig  # noqa: F401
+from backend.models.trade_execution import TradeExecution  # noqa: F401

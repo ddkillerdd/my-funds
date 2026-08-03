@@ -248,9 +248,51 @@
                       <template v-if="a.current_amount != null">（现持 {{ fmtMoney(a.current_amount) }} → 目标 {{ fmtMoney(a.target_amount) }}）</template>
                     </p>
                     <p v-else-if="a.action_amount === 0" class="action-amount amt-zero">无需资金变动</p>
+                    <!-- RFC-020 块C: 记录实际怎么操作 -->
+                    <div class="exec-row">
+                      <span class="exec-label">我实际：</span>
+                      <el-select
+                        v-model="execSelections[a.fund_code]"
+                        placeholder="选择操作"
+                        size="small"
+                        style="width: 110px"
+                        clearable
+                        @change="(v) => saveExec(a, v)"
+                      >
+                        <el-option label="照做" value="same_as_suggest" />
+                        <el-option label="加仓" value="increase" />
+                        <el-option label="减仓" value="reduce" />
+                        <el-option label="未操作" value="none" />
+                        <el-option label="反向" value="reversed" />
+                      </el-select>
+                    </div>
                   </div>
                 </el-timeline-item>
               </el-timeline>
+            </div>
+          </el-card>
+
+          <!-- RFC-020 块3: 盘中短线(择时)速览 -->
+          <el-card v-if="report.intraday_view && Object.keys(report.intraday_view).length" shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><TrendCharts /></el-icon>
+                <span>盘中择时速览</span>
+                <span class="intraday-note">今日指数实时 · 仅参考方向感，不影响核心金额</span>
+              </div>
+            </template>
+            <div class="intraday-grid">
+              <div v-for="(iv, code) in report.intraday_view" :key="code" class="intraday-item">
+                <div class="intraday-fund">{{ fundCodeName(code) }}</div>
+                <div class="intraday-idx">{{ iv.index }}</div>
+                <div class="intraday-pct" :class="(iv.pct_today ?? 0) >= 0 ? 'pct-up' : 'pct-dn'">
+                  {{ iv.pct_today != null ? (iv.pct_today > 0 ? '+' : '') + iv.pct_today + '%' : '—' }}
+                </div>
+                <el-tag :type="iv.signal === 'oversold' ? 'success' : (iv.signal === 'overbought' ? 'danger' : 'info')" size="small">
+                  {{ iv.execution_advice || '观望' }}
+                </el-tag>
+                <div v-if="iv.vs_ma5 != null" class="intraday-ma">vs5日线 {{ iv.vs_ma5 > 0 ? '+' : '' }}{{ iv.vs_ma5 }}%</div>
+              </div>
             </div>
           </el-card>
 
@@ -388,6 +430,13 @@ const backtestStats = ref(null)
 const HISTORY_LIMIT = 20
 // RFC-020: 总资金(前端可调, 每次分析作为绝对金额定价基准)
 const totalCapital = ref(null)
+// RFC-020 块C: 实际操作记录 (fund_code → 用户回填选择)
+const execSelections = ref({})
+const reportDate = computed(() => {
+  // activeReportTime 形如 '2026-08-03 21:20:00'; 取前10位作报告日期
+  const t = activeReportTime.value || ''
+  return t ? String(t).slice(0, 10) : new Date().toISOString().slice(0, 10)
+})
 
 function healthColor(score) {
   if (score >= 70) return '#67c23a'
@@ -400,6 +449,13 @@ function actionType(action) {
   if (action === 'reduce' || action === 'decrease') return 'danger'
   if (action === 'watch') return 'warning'
   return 'info'
+}
+
+function fundCodeName(code) {
+  const repsrc = report.value
+  const hh = repsrc?.holdings_health || []
+  const found = hh.find(h => h.fund_code === code)
+  return found?.fund_name || code
 }
 
 function actionLabel(action) {
@@ -486,6 +542,9 @@ async function loadReportById(id) {
     if (data.found) {
       report.value = data.report
       activeReportTime.value = data.generated_at
+      // RFC-020 块C: 加载该报告下已有的实际操作记录
+      execSelections.value = {}
+      loadExecutions()
     } else {
       error.value = data.message || '报告加载失败'
       report.value = null
@@ -550,6 +609,55 @@ async function saveTotalCapital(val) {
   } catch (e) {
     ElMessage.error('总资金保存失败: ' + e.message)
   }
+}
+
+// RFC-020 块C: 记录/回填“实际怎么操作”
+async function saveExec(action, val) {
+  if (!val) return
+  if (!report.value?.actions?.length) {
+    ElMessage.warning('请先生成/加载报告')
+    return
+  }
+  const reportId = activeReportId.value ?? null
+  if (!reportId) {
+    ElMessage.warning('当前报告未持久化, 请从历史记录加载后再记录')
+    return
+  }
+  try {
+    const resp = await fetch('/api/trade-execution/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        report_id: reportId,
+        report_date: reportDate.value,
+        fund_code: action.fund_code,
+        fund_name: action.fund_name || action.fund_code,
+        actual_action: val,
+        actual_amount: null,
+        note: '前端回填',
+      }),
+    })
+    if (!resp.ok) throw new Error('保存失败')
+    ElMessage.success('已记录实际操作')
+  } catch (e) {
+    ElMessage.error('记录失败: ' + e.message)
+  }
+}
+
+// 加载某报告下已有的实际操作记录, 回填 execSelections
+async function loadExecutions() {
+  const reportId = activeReportId.value ?? null
+  if (!reportId) return
+  try {
+    const resp = await fetch(`/api/trade-execution/report/${reportId}`)
+    if (!resp.ok) return
+    const data = await resp.json()
+    const sel = {}
+    for (const r of data.records || []) {
+      if (r.actual_action) sel[r.fund_code] = r.actual_action
+    }
+    execSelections.value = sel
+  } catch { /* silent */ }
 }
 
 onMounted(async () => {
@@ -623,6 +731,58 @@ onMounted(async () => {
   font-size: 12px;
   color: #606266;
   white-space: nowrap;
+}
+
+.exec-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.exec-label {
+  font-size: 12px;
+  color: #909399;
+  white-space: nowrap;
+}
+
+.intraday-note {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 10px;
+  font-weight: normal;
+}
+.intraday-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.intraday-item {
+  padding: 8px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+}
+.intraday-fund {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.intraday-idx {
+  font-size: 12px;
+  color: #909399;
+  margin: 2px 0;
+}
+.intraday-pct {
+  font-size: 16px;
+  font-weight: 700;
+}
+.intraday-pct.pct-up { color: #f56c6c; }
+.intraday-pct.pct-dn { color: #67c23a; }
+.intraday-ma {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 2px;
 }
 
 .skeleton-card {
