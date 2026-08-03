@@ -61,9 +61,10 @@
                   <b>{{ row.suggested_ratio_pct }}%</b>
                 </template>
               </el-table-column>
-              <el-table-column label="择时" width="90">
+              <el-table-column label="择时" width="140">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="windowTag(row.timing_window)">{{ row.timing_window }}</el-tag>
+                  <el-tag size="small" :type="windowTag(row.timing_window)">{{ windowText(row.timing_window) }}</el-tag>
+                  <div v-if="row.timing_score != null" class="timing-score">信号 {{ row.timing_score }}</div>
                 </template>
               </el-table-column>
               <el-table-column label="AI 理由" prop="reason" min-width="220" />
@@ -364,7 +365,10 @@ const allocSum = computed(() => Object.values(allocInputs).reduce((s, v) => s + 
 const sumClass = computed(() => (Math.abs(allocSum.value - 100) < 1 ? 'ok' : 'bad'))
 
 function scoreTag(s) { return s >= 75 ? 'danger' : s >= 65 ? 'warning' : 'info' }
-function windowTag(w) { return w === 'now_entry' ? 'success' : w === 'staged_entry' ? 'warning' : 'info' }
+function windowTag(w) { return w === 'now_entry' ? 'success' : w === 'staged_entry' ? 'warning' : w === 'avoid' ? 'danger' : 'info' }
+function windowText(w) {
+  return w === 'now_entry' ? '适合买入' : w === 'staged_entry' ? '分批买入' : w === 'avoid' ? '暂避' : '等待' 
+}
 function statusTag(s) { return s === 'active' ? 'success' : s === 'completed' ? 'info' : 'warning' }
 function statusTagText(s) { return s === 'active' ? '进行中' : s === 'completed' ? '已完成' : '草稿' }
 function pos(v) { return v >= 0 ? 'ok' : 'neg' }
@@ -521,10 +525,8 @@ async function generateTranches() {
       ai_summary: recResult.value?.overall_view || null,
     })
     const planId = planRes.data.id
+    // 分批择时交给后端引擎自动判断(实时择时信号), 不手动指定
     const fund_windows = {}
-    if (recResult.value?.picks) {
-      recResult.value.picks.forEach((p) => { if (alloc[p.fund_code] != null) fund_windows[p.fund_code] = p.timing_window })
-    }
     const trRes = await generatePlanTranches(planId, {
       fund_windows,
       total_weeks: totalWeeks.value,
@@ -605,6 +607,7 @@ onMounted(() => loadPlans())
 .section-block { margin-top: 18px; }
 .section-title { font-weight: 600; margin: 12px 0; }
 .rec-table { margin-bottom: 12px; }
+.timing-score { font-size: 12px; color: #909399; line-height: 1.4; }
 .overall-box { margin-top: 12px; white-space: pre-wrap; }
 .step-actions { margin-top: 18px; display: flex; gap: 12px; align-items: center; }
 .sum-line { margin: 12px 0; }

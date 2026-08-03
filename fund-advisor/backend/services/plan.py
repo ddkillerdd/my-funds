@@ -107,6 +107,25 @@ class PlanService:
 
         # 组合级窗口: 按权重加权
         fund_windows = fund_windows or {}
+
+        # ---- 自动择时: 若未手动指定每只基金窗口, 用引擎实时择时信号填充 ----
+        if not fund_windows and alloc:
+            try:
+                from backend.services.recommend_service import RecommendService
+
+                recommender = RecommendService(self.db)
+                _auto = {}
+                for _code in alloc.keys():
+                    _t = recommender.get_timing(_code)
+                    _w = _t.get("recommendation") or "staged_entry"
+                    if _w == "staged_entry":
+                        _w = "staged_entry"  # 中间档, 倍率 1.0
+                    _auto[_code] = _w
+                fund_windows = _auto
+                logger.info("plan tranches 自动择时: %s", fund_windows)
+            except Exception as _e:  # noqa: BLE001
+                logger.warning("plan tranches 自动择时失败, 回落默认: %s", _e)
+
         total_weeks = max(4, int(total_weeks))
         interval_weeks = max(1, int(interval_weeks))
         n_batches = max(2, total_weeks // interval_weeks)

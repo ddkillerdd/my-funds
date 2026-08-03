@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 
 from .models import NavPoint, FundHolding, QuantIndicators
+from .timing import compute_entry_recommendation
 
 
 # ============================================================
@@ -68,12 +69,13 @@ class ScreenerResult:
 #  WEIGHTS (RFC-008 section 三)
 # ============================================================
 BASE_FACTOR_WEIGHTS = {
-    "momentum": 0.20,
-    "quality": 0.20,
-    "drawdown": 0.15,
-    "diversify": 0.20,
-    "size": 0.10,
-    "valuation": 0.15,
+    "momentum": 0.18,
+    "quality": 0.18,
+    "drawdown": 0.13,
+    "diversify": 0.18,
+    "size": 0.09,
+    "valuation": 0.13,
+    "timing": 0.11,
 }
 
 # Style index mapping for attribution (fund-agnostic proxy)
@@ -323,7 +325,27 @@ def screen_funds(
         s_score, s_ev = size_score(detail) if detail else (50.0, "无规模数据(权重失效)")
         v_score, v_ev = valuation_score(qi)
 
-        # available factors → weight re-normalization
+        # --- 真择时(引擎 timing): 现在该不该买, 参与总分 + 风控门禁 ---
+        # vp 若已有则为估值分位, 传给 timing 激活估值因子
+        vp_for_timing = getattr(qi, "_valuation_percentile", None)
+        try:
+            _trec = compute_entry_recommendation(
+                qi,
+                budget_pct=budget_pct,
+                override_valuation_percentile=vp_for_timing,
+            )
+            t_window = _trec.window            # now_entry/staged/wait/avoid
+            t_score = _trec.timing_score       # 0-100
+            t_gate_blocked = bool((_trec.risk_gate or {}).get("blocked"))
+            t_evidence = _trec.risk_gate.get("reason") if (_trec.risk_gate and _trec.risk_gate.get("blocked")) else ""
+            if not t_evidence:
+                t_evidence = "; ".join(
+                    f"{f.name}:{f.signal}" for f in _trec.factors if getattr(f, "signal", None)
+                )
+        except Exception as _e:  # noqa: BLE001
+            t_window, t_score, t_gate_blocked, t_evidence = "wait", 50.0, False, f"择时失败:{_e}"
+
+        # available factors (weight re-normalization)
         avail_w = {}
         w = dict(BASE_FACTOR_WEIGHTS)
         if div_score is None:
@@ -347,12 +369,15 @@ def screen_funds(
                                 div_ev, w["diversify"] / wsum),
             ScreenerFactorScore("size", 0.0, s_score, s_ev, w["size"] / wsum),
             ScreenerFactorScore("valuation", 0.0, v_score, v_ev, w["valuation"] / wsum),
+            ScreenerFactorScore("timing", 0.0, t_score, t_evidence, w["timing"] / wsum),
         ]
 
-        # weighted total
+        # weighted total (score × weight; avoid 被门禁拦截 -> 总分压到最低)
         total = 0.0
         for fs in factor_scores:
             total += fs.score * fs.weight
+        if t_window in ("avoid",) and t_gate_blocked:
+            total = 0.0  # 现在不该买 -> 垫底, 不占推荐名额
         total = round(_clamp(total), 1)
 
         style = style_attribution(cand_navs, ctx.style_indexes)
@@ -380,6 +405,8 @@ def screen_funds(
             correlation_with_portfolio=corr,
             suggested_ratio_pct=ratio,
             data_quality=qi.data_quality,
+            timing_window=t_window,
+            timing_score=t_score,
         ))
 
     scored.sort(key=lambda r: r.total_score, reverse=True)

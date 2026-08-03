@@ -101,7 +101,26 @@ class PlanRecommenderService:
             top_n=top_n,
             use_current_portfolio=True,
         )
-        return res.get("recommendations", [])
+        recs = res.get("recommendations", [])
+        # ---- A/C/B/E 同份额去重: 同一基础名的基金(仅份额后缀不同), 保留总分最高 ----
+        import re
+
+        def _base(nm: str) -> str:
+            nm = (nm or "").strip()
+            # 末位裸份额后缀 A/B/C/E -> 视为同一基金不同份额(如 混合C/混合A/QDII)C)
+            if len(nm) > 3 and nm[-1] in "ABCE":
+                return nm[:-1]
+            return nm
+
+        best: dict = {}
+        for r in recs:
+            b = _base(r.get("fund_name") or "")
+            if b not in best or (r.get("total_score") or 0) > (best[b].get("total_score") or 0):
+                best[b] = r
+        recs = list(best.values())
+        recs.sort(key=lambda r: (r.get("total_score") or 0), reverse=True)
+        recs = recs[:top_n]
+        return recs
 
     # ─────────────────────────────────────────
     #  ② AI研判层: 规则 Top N -> AI 挑 Top N + 理由
@@ -379,6 +398,7 @@ class PlanRecommenderService:
                 "style_tag": r.get("style_tag"),
                 "suggested_ratio_pct": r.get("suggested_ratio_pct"),
                 "timing_window": r.get("timing_window"),
+                "timing_score": r.get("timing_score"),
                 "reason": p.get("reason", ""),
                 "risk_tip": p.get("risk_tip", ""),
                 "one_liner": p.get("one_liner", ""),
