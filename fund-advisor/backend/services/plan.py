@@ -267,6 +267,20 @@ class PlanService:
                     return Decimal(str(arr[-1]["n"]))
             except Exception:
                 pass
+        # 主库+临时表都没有(如用户未回测直接建仓) -> 实时从天天基金拉最新净值
+        try:
+            from backend.services.nav_fetcher import fetch_latest_nav
+            import asyncio, httpx
+
+            nav = None
+            async def _go():
+                async with httpx.AsyncClient(timeout=25) as c:
+                    return await fetch_latest_nav(c, fund_code)
+            nd = asyncio.run(_go())
+            if nd and nd.unit_nav:
+                return Decimal(str(nd.unit_nav))
+        except Exception:
+            pass
         return None
 
     def _upsert_plan_holding(self, plan_id, code, wgt_pct, amount, shares, nav):
