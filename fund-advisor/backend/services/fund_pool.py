@@ -67,27 +67,37 @@ class FundPoolService:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Referer": "https://fund.eastmoney.com/",
         }
+        # 按类型分页拉, 使池内 fund_type 有真实值(rank 接口 ft 参数区分类型)
+        type_map = {
+            "股票": "gp", "混合": "hh", "指数": "zs",
+            "债券": "zq", "QDII": "qdii", "货币": "hb",
+        }
         async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
-            for page in range(1, pages + 1):
-                url = (
-                    f"{_RANK_URL}?op=ph&dt=kf&ft=all&rs=&gs=0&sc=1nzf"
-                    f"&st=desc&sd=2025-01-01&ed=2026-08-03&qdii="
-                    f"&tabSubtype=,,,,,&pi={page}&pn={page_size}&dx=1"
-                )
-                try:
-                    resp = await client.get(url)
-                    rows = _parse_rank(resp.text)
-                    if not rows:
-                        break
-                    for r in rows:
-                        FundCandidate.upsert(self.db, **r)
-                    fetched += len(rows)
-                    logger.info("pool warm_start page %d: +%d (total %d)", page, len(rows), fetched)
-                except Exception as e:  # noqa: BLE001
-                    errors += 1
-                    logger.warning("pool warm_start page %d failed: %s", page, e)
-                    if errors >= 3:
-                        break
+            for ftype, ft_code in type_map.items():
+                for page in range(1, pages + 1):
+                    url = (
+                        f"{_RANK_URL}?op=ph&dt=kf&ft={ft_code}&rs=&gs=0&sc=1nzf"
+                        f"&st=desc&sd=2025-01-01&ed=2026-08-03&qdii="
+                        f"&tabSubtype=,,,,,&pi={page}&pn={page_size}&dx=1"
+                    )
+                    try:
+                        resp = await client.get(url)
+                        rows = _parse_rank(resp.text, fund_type=ftype)
+                        if not rows:
+                            break
+                        for r in rows:
+                            FundCandidate.upsert(self.db, **r)
+                        fetched += len(rows)
+                        logger.info("pool warm_start[%s] page %d: +%d (total %d)",
+                                    ftype, page, len(rows), fetched)
+                    except Exception as e:  # noqa: BLE001
+                        errors += 1
+                        logger.warning("pool warm_start[%s] page %d failed: %s",
+                                       ftype, page, e)
+                        if errors >= 30:
+                            break
+                if errors >= 30:
+                    break
 
         # 兜底: 若一只都没抓到, 用预设小候选集
         if fetched == 0:
@@ -171,8 +181,8 @@ class FundPoolService:
         }
 
 
-def _parse_rank(text: str) -> list:
-    """解析天天基金排行接口 JSONP -> 候选行列表。"""
+def _parse_rank(text: str, fund_type: Optional[str] = None) -> list:
+    """解析天天基金排行接口 JSONP -> 候选行列表(可附基金类型)。"""
     import json
     import re
 
@@ -235,7 +245,7 @@ def _parse_rank(text: str) -> list:
             "scale": scale,
             "open_apply": open_apply,
             "label": None,
-            "fund_type": None,
+            "fund_type": fund_type,
             "style": None,
         })
     return rows

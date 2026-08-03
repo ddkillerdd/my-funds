@@ -386,11 +386,16 @@ async function runRecommend() {
       budget: budget.value,
       risk_profile: riskProfile.value,
       fund_types: fundTypes.value.length ? fundTypes.value : null,
-    }) 
+    })
     const body = res?.data || {}
     const picks = Array.isArray(body.picks) ? body.picks : []
     if (!picks.length) {
-      recError.value = body.detail || body.error || '没有候选基金，可先温启动基金池或稍后重试'
+      // 区分"真的无候选" vs "响应异常/池未就绪"
+      recError.value = body.detail || body.error
+        ? (body.detail || body.error)
+        : (Object.keys(body).length === 0
+            ? '荐基服务响应异常(可能超时或服务重启)，请稍后重试'
+            : '当前没有推荐候选(候选可能都已持有或池未温启动)，可重试或稍后再试')
       return
     }
     recResult.value = body

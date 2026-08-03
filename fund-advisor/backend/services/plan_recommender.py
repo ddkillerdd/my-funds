@@ -72,9 +72,17 @@ class PlanRecommenderService:
         held = self._held_codes()
 
         q = select(FundCandidate).where(FundCandidate.status == 1)
+        type_filtered = False
         if fund_types:
+            type_filtered = True
             q = q.where(FundCandidate.fund_type.in_(fund_types))
         rows = self.db.execute(q).scalars().all()
+        # 类型数据缺失兑底(池里 fund_type 可能未解析/全 None): 过滤后为空则自动降级为不限类型
+        if type_filtered and not rows:
+            logger.warning(
+                "fund_types=%s 过滤后候选为空(池类型数据缺失?), 降级为不限类型", fund_types)
+            q = select(FundCandidate).where(FundCandidate.status == 1)
+            rows = self.db.execute(q).scalars().all()
 
         # 剔除已持有 + 无近1年数据, 按近1年涨幅降序粗排序
         cand_rows = [
