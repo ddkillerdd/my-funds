@@ -49,7 +49,8 @@ class CalendarService:
         # 1. Import timeline & baseline
         imports = self._load_import_timeline()
         if not imports:
-            return empty
+            # 无导入记录(手填持仓)时, 降级为按当前持仓份额 + 历史净值现算每日盈亏
+            return self._monthly_pnl_no_import(year, month, month_start, month_end, empty)
 
         baseline_date = imports[0].data_date
 
@@ -178,6 +179,104 @@ class CalendarService:
             summary=summary,
             daily_data=daily_data,
             trade_dates=sorted(d.isoformat() for d in trade_dates),
+        )
+
+    def _monthly_pnl_no_import(
+        self,
+        year: int,
+        month: int,
+        month_start: date,
+        month_end: date,
+        empty: CalendarMonthResponse,
+    ) -> CalendarMonthResponse:
+        """无导入记录(手填持仓)时: 直接用当前持仓份额 + 历史净值现算每日盈亏。
+
+        假设整个期间份额恒定(手填用户无自动买卖记录), 每日盈亏 = 各基金
+        份额 × (当日净值 - 前交易日净值) 之和, 日市值 = 份额 × 当日净值。
+        """
+        holdings = self.db.query(FundHolding).filter(FundHolding.status != 0).all()
+        if not holdings:
+            return empty
+
+        # 持仓份额恒定, 聚合到 fund_code
+        shares_map: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        for h in holdings:
+            if h.shares and h.shares > ZERO:
+                shares_map[h.fund_code] += h.shares
+        if not shares_map:
+            return empty
+
+        money_fund_codes = self._get_money_fund_codes()
+        fund_codes = [c for c in shares_map if c not in money_fund_codes]
+        if not fund_codes:
+            return empty
+
+        # 加载当月(含前15日缓冲)每只基金的净值时间线
+        nav_timeline = self._build_nav_lookup(fund_codes, month_start, month_end)
+
+        # 该月内所有净值出现的交易日(交集)
+        trading_dates = sorted(
+            {
+                d
+                for entries in nav_timeline.values()
+                for d, _ in entries
+                if month_start <= d <= month_end
+            }
+        )
+        if not trading_dates:
+            return empty
+
+        daily_data: list[CalendarDayData] = []
+        for td in trading_dates:
+            day_mv = ZERO
+            day_pnl = ZERO
+            has_data = False
+            for fc in fund_codes:
+                shares = shares_map[fc]
+                nav = self._nav_on_or_before(nav_timeline, fc, td)
+                if nav is None:
+                    continue
+                day_mv += shares * nav
+                # 前一个交易日的净值 → 当日盈亏
+                prev_dates = [d for d in trading_dates if d < td]
+                if prev_dates:
+                    nav_prev = self._nav_on_or_before(nav_timeline, fc, prev_dates[-1])
+                    if nav_prev is not None:
+                        day_pnl += shares * (nav - nav_prev)
+                has_data = True
+            if not has_data:
+                continue
+            pnl_pct = (
+                (day_pnl / (day_mv - day_pnl) * 100).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if (day_mv - day_pnl) != ZERO
+                else None
+            )
+            daily_data.append(
+                CalendarDayData(
+                    date=td,
+                    daily_pnl=day_pnl.quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    ),
+                    daily_pnl_pct=pnl_pct,
+                    market_value=day_mv.quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    ),
+                    is_trading_day=True,
+                )
+            )
+
+        if not daily_data:
+            return empty
+
+        summary = self._build_summary(daily_data)
+        return CalendarMonthResponse(
+            year=year,
+            month=month,
+            summary=summary,
+            daily_data=daily_data,
+            trade_dates=[],
         )
 
     def get_day_detail(self, target_date: date) -> CalendarDayResponse:

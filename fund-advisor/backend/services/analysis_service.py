@@ -11,6 +11,7 @@ from backend.models.fund import Fund
 from backend.models.holding import FundHolding
 from backend.models.holding_daily_pnl import HoldingDailyPnL
 from backend.models.import_record import ImportRecord
+from backend.models.nav_history import FundNavHistory
 from backend.schemas.holding_daily_pnl import (
     PeriodItem,
     FundPnLSummary,
@@ -31,7 +32,8 @@ class AnalysisService:
         ).scalars().all()
 
         if len(records) < 2:
-            return []
+            # 无导入记录(手填持仓)时: 用持仓 + 净值历史范围生成一个可分析期间
+            return self._periods_no_import()
 
         periods = []
         for i in range(len(records) - 1):
@@ -70,6 +72,100 @@ class AnalysisService:
 
         return periods
 
+    def _periods_no_import(self) -> list[PeriodItem]:
+        """无导入记录(手填持仓)时: 用持仓基金的净值历史范围生成单个分析期间。
+
+        期间 = 从最早净值日期 到 最近净值日期, 让用户一路看到盈亏曲线。
+        """
+        holdings = self.db.execute(
+            select(FundHolding.fund_code).where(FundHolding.status != 0).distinct()
+        ).scalars().all()
+        if not holdings:
+            return []
+
+        date_row = self.db.execute(
+            select(
+                func.min(FundNavHistory.nav_date).label("mn"),
+                func.max(FundNavHistory.nav_date).label("mx"),
+            ).where(FundNavHistory.fund_code.in_(holdings))
+        ).one()
+        first_date, last_date = date_row.mn, date_row.mx
+        if not first_date or not last_date:
+            return []
+
+        # 默认看近一年: 起点取 (最近净值日-1年) 与最早净值日的较晚者, 避免跨度过长
+        from datetime import timedelta
+        lookback_start = last_date - timedelta(days=365)
+        if first_date > lookback_start:
+            lookback_start = first_date
+        first_date = lookback_start
+
+        # 期间总盈亏与交易日数由净值现算
+        total_pnl, trading_days = self._calc_pnl_range_no_import(
+            holdings, first_date, last_date
+        )
+
+        return [
+            PeriodItem(
+                start_date=first_date,
+                end_date=last_date,
+                start_import_id=0,
+                end_import_id=0,
+                start_label=f"开始 ({first_date})",
+                end_label=f"至今 ({last_date})",
+                total_pnl=total_pnl,
+                trading_days=trading_days,
+            )
+        ]
+
+    def _calc_pnl_range_no_import(
+        self, fund_codes: list[str], start_date: date, end_date: date
+    ) -> tuple[Optional[Decimal], int]:
+        """无导入时: 用当前持仓份额×净值算一段区间内的总盈亏与交易日数。"""
+        from collections import defaultdict
+        from decimal import Decimal as D
+        from backend.models.holding import FundHolding
+
+        shares_map: dict[str, D] = defaultdict(lambda: D("0"))
+        hrows = self.db.execute(
+            select(FundHolding.fund_code, FundHolding.shares)
+            .where(FundHolding.status != 0)
+        ).all()
+        for code, sh in hrows:
+            if sh:
+                shares_map.setdefault(code, D("0"))
+                shares_map[code] += sh
+
+        # 每只基金在区间内的净值序列
+        nav_rows = self.db.execute(
+            select(FundNavHistory.fund_code, FundNavHistory.nav_date, FundNavHistory.unit_nav)
+            .where(
+                FundNavHistory.fund_code.in_(fund_codes),
+                FundNavHistory.nav_date >= start_date,
+                FundNavHistory.nav_date <= end_date,
+            )
+            .order_by(FundNavHistory.nav_date.asc())
+        ).all()
+
+        by_date: dict[date, dict[str, D]] = defaultdict(dict)
+        for code, d, nav in nav_rows:
+            by_date[d][code] = nav
+
+        dates = sorted(by_date.keys())
+        total_pnl = D("0")
+        prev_mv: dict[str, D] = {}
+        trading_days = 0
+        for d in dates:
+            day_mv = D("0")
+            for code, nav in by_date[d].items():
+                if code in shares_map:
+                    day_mv += shares_map[code] * nav
+            if prev_mv:
+                total_pnl += day_mv - sum(prev_mv.values())
+            trading_days += 1
+            prev_mv = {k: by_date[d].get(k, D("0")) * shares_map.get(k, D("0")) for k in by_date[d]}
+
+        return (total_pnl, trading_days)
     def get_period_detail(
         self, start_date: date, end_date: date
     ) -> list[DailyPnLPoint]:
@@ -88,19 +184,33 @@ class AnalysisService:
             .order_by(HoldingDailyPnL.pnl_date)
         ).all()
 
-        return [
-            DailyPnLPoint(
-                pnl_date=r.pnl_date,
-                total_pnl=r.total_pnl,
-                total_mv=r.total_mv,
-            )
-            for r in rows
-        ]
+        if rows:
+            return [
+                DailyPnLPoint(
+                    pnl_date=r.pnl_date,
+                    total_pnl=r.total_pnl,
+                    total_mv=r.total_mv,
+                )
+                for r in rows
+            ]
+
+        # 无每日盈亏快照(手填持仓)时: 用持仓份额×净值现算每日盈亏
+        return self._period_detail_no_import(start_date, end_date)
 
     def get_fund_pnl(
         self, start_date: date, end_date: date
     ) -> list[FundPnLSummary]:
         """Get per-fund PnL summary for a period."""
+        # 无每日盈亏快照(手填持仓)时: 用持仓份额×净值现算单基金盈亏
+        has_snapshot = self.db.execute(
+            select(func.count()).select_from(HoldingDailyPnL).where(
+                HoldingDailyPnL.pnl_date > start_date,
+                HoldingDailyPnL.pnl_date <= end_date,
+            )
+        ).scalar()
+        if not has_snapshot:
+            return self._fund_pnl_no_import(start_date, end_date)
+
         # Aggregate daily PnL by fund_code
         rows = self.db.execute(
             select(
@@ -197,4 +307,139 @@ class AnalysisService:
 
         # Sort by period_pnl desc
         results.sort(key=lambda x: x.period_pnl or Decimal("0"), reverse=True)
+        return results
+
+    # ------------------------------------------------------------------
+    # 无导入(手填持仓)支持: 直接用持仓份额 × 历史净值现算
+    # ------------------------------------------------------------------
+    def _load_effective_shares(self) -> dict[str, Decimal]:
+        """当前所有持仓份额聚合到 fund_code。"""
+        from collections import defaultdict
+        rows = self.db.execute(
+            select(FundHolding.fund_code, FundHolding.shares)
+            .where(FundHolding.status != 0)
+        ).all()
+        m: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        for code, sh in rows:
+            if sh:
+                m[code] += sh
+        return dict(m)
+
+    def _period_detail_no_import(
+        self, start_date: date, end_date: date
+    ) -> list[DailyPnLPoint]:
+        """手填持仓时, 按日现算组合市值与盈亏曲线。"""
+        from collections import defaultdict
+        from decimal import Decimal as D
+        from backend.models.fund import Fund as _Fund
+
+        shares = self._load_effective_shares()
+        codes = list(shares.keys())
+        if not codes:
+            return []
+
+        money_codes = self.db.execute(
+            select(_Fund.fund_code).where(
+                _Fund.fund_code.in_(codes), _Fund.fund_type == "货币型"
+            )
+        ).scalars().all()
+        money_set = set(money_codes)
+        invest_codes = [c for c in codes if c not in money_set]
+        if not invest_codes:
+            return []
+
+        nav_rows = self.db.execute(
+            select(FundNavHistory.fund_code, FundNavHistory.nav_date, FundNavHistory.unit_nav)
+            .where(
+                FundNavHistory.fund_code.in_(invest_codes),
+                FundNavHistory.nav_date > start_date,
+                FundNavHistory.nav_date <= end_date,
+            )
+            .order_by(FundNavHistory.nav_date.asc())
+        ).all()
+        if not nav_rows:
+            return []
+
+        by_date: dict[date, dict[str, Decimal]] = defaultdict(dict)
+        for code, d, nav in nav_rows:
+            by_date[d][code] = nav
+
+        dates = sorted(by_date.keys())
+        daily_mv: dict[date, Decimal] = {}
+        for d in dates:
+            daily_mv[d] = sum(
+                (shares[c] * by_date[d][c] for c in by_date[d] if c in shares),
+                D("0"),
+            )
+
+        points: list[DailyPnLPoint] = []
+        prev = None
+        for d in dates:
+            mv = daily_mv[d]
+            pnl = (mv - prev) if prev is not None else D("0")
+            points.append(DailyPnLPoint(pnl_date=d, total_pnl=pnl, total_mv=mv))
+            prev = mv
+        return points
+
+    def _fund_pnl_no_import(
+        self, start_date: date, end_date: date
+    ) -> list[FundPnLSummary]:
+        """手填持仓时, 按基金现算期间盈亏。"""
+        from decimal import Decimal as D
+        from backend.models.fund import Fund as _Fund
+        from collections import defaultdict
+
+        shares = self._load_effective_shares()
+        codes = list(shares.keys())
+        if not codes:
+            return []
+
+        nav_rows = self.db.execute(
+            select(FundNavHistory.fund_code, FundNavHistory.nav_date, FundNavHistory.unit_nav)
+            .where(
+                FundNavHistory.fund_code.in_(codes),
+                FundNavHistory.nav_date > start_date,
+                FundNavHistory.nav_date <= end_date,
+            )
+            .order_by(FundNavHistory.nav_date.asc())
+        ).all()
+        per_fund: dict[str, dict[date, Decimal]] = defaultdict(dict)
+        for code, d, nav in nav_rows:
+            per_fund[code][d] = nav
+
+        funds = self.db.execute(
+            select(_Fund).where(_Fund.fund_code.in_(codes))
+        ).scalars().all()
+        fund_map = {f.fund_code: f for f in funds}
+        holdings = self.db.execute(
+            select(FundHolding.fund_code, FundHolding.platform)
+            .where(FundHolding.fund_code.in_(codes)).distinct()
+        ).all()
+        platform_map = {r.fund_code: r.platform for r in holdings}
+
+        results: list[FundPnLSummary] = []
+        for code in codes:
+            navs = per_fund.get(code)
+            if not navs:
+                continue
+            dates = sorted(navs.keys())
+            fd, ld = dates[0], dates[-1]
+            nav0, nav1 = navs[fd], navs[ld]
+            sh = shares[code]
+            start_mv = sh * nav0
+            end_mv = sh * nav1
+            period_pnl = end_mv - start_mv
+            pnl_pct = (period_pnl / start_mv * 100) if start_mv else None
+            f = fund_map.get(code)
+            results.append(FundPnLSummary(
+                fund_code=code,
+                fund_name=f.fund_name if f else None,
+                platform=platform_map.get(code),
+                shares=sh,
+                start_mv=start_mv,
+                end_mv=end_mv,
+                period_pnl=period_pnl,
+                period_pnl_pct=pnl_pct,
+            ))
+        results.sort(key=lambda x: x.period_pnl or D("0"), reverse=True)
         return results
