@@ -69,6 +69,7 @@ class PlanAllocatorService:
                 raw[code] = raw[code] / total_raw * 100.0
 
         # 3. 应用单只上下限(迭代收敛)
+        eff_max = MAX_WEIGHT if n * MAX_WEIGHT >= 100.0 else round(100.0 / n, 2)
         weights = self._apply_bounds(raw, n, min_w=MIN_WEIGHT, max_w=MAX_WEIGHT)
 
         # 4. 组装 items
@@ -84,12 +85,17 @@ class PlanAllocatorService:
                 "budget_amount": None,  # 由上层按 total_budget 填
             })
 
+        eff_max = round(100.0 / n, 2) if n and n * MAX_WEIGHT < 100.0 else MAX_WEIGHT
+        notes = [f"单只上限 {eff_max}%, 下限 {MIN_WEIGHT}%"]
+        if n and n * MAX_WEIGHT < 100.0:
+            notes.append(f"基金数过少({n}只), 单只上限自动放宽至 {eff_max}% 以满足权重和=100%")
+        notes.append(f"风险偏好 {risk_profile}(高风险类 x{scale})")
+
         return {
             "weights": {k: round(v, 2) for k, v in weights.items()},
             "items": items,
             "sum": round(sum(weights.values()), 2),
-            "notes": [f"单只上限 {MAX_WEIGHT}%, 下限 {MIN_WEIGHT}%",
-                      f"风险偏好 {risk_profile}(高风险类 x{scale})"],
+            "notes": notes,
         }
 
     # ─────────────────────────────────────────
@@ -102,6 +108,10 @@ class PlanAllocatorService:
             return {}
         if n * min_w > 100.0:
             min_w = 100.0 / n
+        # 若 n*max <100(基金数太少, 均分突破上限), 放宽单只上限为 100/n,
+        # 否则上限不可满足(如 3 只×25%=75%<100%), 会陷入裁剪-归一化死循环
+        if n * max_w < 100.0:
+            max_w = 100.0 / n
 
         weights = dict(raw)
         for _ in range(50):

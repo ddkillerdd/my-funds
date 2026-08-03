@@ -24,13 +24,14 @@ from backend.services.recommend_service import RecommendService
 
 logger = logging.getLogger(__name__)
 
-# 模型 failover 链(RFC-017/014 实测):
-#   deepseek-v4-flash 主( response_format=json_object 稳定返回纯 JSON, 本项目每日报告验证可用)
-#   minimax-m3 次(能返回JSON但慢, ~45-95s 易超时)
-#   step-3.7/nemotron 是推理模型, response_format 时 content 常为 None, 兜底
+# 模型 failover 链(RFC-017/014 实测 + 2026-08-03 重新校准):
+#   minimax-m3 主(实测 4/5 成功, 稳定返回纯 JSON; 长候选略慢但 failover+取消已缓解)
+#   deepseek-v4-flash 次(2026-08-03 实测 1/5 成功, 80% 时返回 529 过载, 已退化)
+#   注意: minimax 对超长提示词极慢(~46-95s), 候选已精简到 Top 8
+#   step-3.7 是推理模型, response_format 时 content 常为 None(仅取到 reasoning), 兜底
 _MODEL_CHAIN = [
-    "deepseek-ai/deepseek-v4-flash",
     "minimaxai/minimax-m3",
+    "deepseek-ai/deepseek-v4-flash",
     "stepfun-ai/step-3.7-flash",
 ]
 
@@ -169,34 +170,79 @@ class PlanRecommenderService:
             except Exception as ex:  # noqa: BLE001
                 return {"ok": False, "model": model, "err": str(ex)[:200]}
 
-        results = await asyncio.gather(*(_try(m) for m in _MODEL_CHAIN))
-        for res in results:
-            if res.get("ok"):
-                d = res["data"]
-                return {
-                    "picks": res["picks"],
-                    "overall_view": d.get("overall_view", ""),
-                    "model": res["model"],
-                    "error": None,
-                }
-            last_err = f"{res['model']}: {res['err']}"
-            logger.warning("plan ai_pick model %s failed: %s", res["model"], res["err"])
+        # 并行请求三个模型(failover), 第一个成功的立刻返回并取消其余;
+        # 用 asyncio.wait(FIRST_COMPLETED) 避免 gather 等所有(慢模型会拖垮总时长)
+        tasks = {asyncio.create_task(_try(m), name=m): m for m in _MODEL_CHAIN}
+        pending = set(tasks.keys())
+        fail_msgs = []
+        winner = None
+        deadline = asyncio.get_event_loop().time() + 95
+        while pending:
+            remain = deadline - asyncio.get_event_loop().time()
+            if remain <= 0:
+                break
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED, timeout=min(remain, 30)
+            )
+            for t in done:
+                res = t.result()
+                if res.get("ok"):
+                    winner = res
+                    break
+                fail_msgs.append(f"{res['model']}: {res['err']}")
+            if winner:
+                break
+        # 取消还没完成的请求, 释放连接
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
+        if winner:
+            d = winner["data"]
+            return {
+                "picks": winner["picks"],
+                "overall_view": d.get("overall_view", ""),
+                "model": winner["model"],
+                "error": None,
+            }
+
+        last_err = "; ".join(fail_msgs) or "所有模型均失败/超时"
+        logger.warning("plan ai_pick 三模型均失败: %s", last_err)
         return {"picks": [], "overall_view": "", "model": None,
                 "error": f"AI 研判失败: {last_err}"}
 
     async def _chat(self, s, model: str, payload: dict,
-                    timeout: float = 60.0) -> dict:
+                    timeout: float = 90.0) -> dict:
         payload = dict(payload)
         payload["model"] = model
         headers = {
             "Authorization": f"Bear" + f"er {s.NEWAPI_API_KEY}",
             "Content-Type": "application/json",
         }
+        # 5xx(尤其 NewAPI 瞬时 529 过载)重试, 短退避自愈
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{s.NEWAPI_BASE_URL}/chat/completions", json=payload, headers=headers
-            )
+            resp = None
+            last_err = None
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{s.NEWAPI_BASE_URL}/chat/completions", json=payload, headers=headers
+                    )
+                except httpx.HTTPError as ex:
+                    last_err = f"网络异常: {ex}"
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                if resp.status_code in (429, 500, 502, 503, 529):
+                    last_err = f"HTTP {resp.status_code} overloa:{resp.text[:80]}"
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                break
+            if resp is None:
+                raise ValueError(f"模型 {model} 全部重试失败: {last_err}")
             if resp.status_code != 200:
                 raise ValueError(f"HTTP {resp.status_code}: {resp.text[:200]}")
             data = resp.json()
