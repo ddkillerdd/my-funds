@@ -384,16 +384,15 @@ async function runRecommend() {
   // 空响应时自动重试(偶发 proxy/长请求空 body, 快路径已验证稳定成功)
   const maxRetry = 2
   let body = null
-  let rawStatus = '?'
   for (let attempt = 0; attempt <= maxRetry; attempt++) {
     try {
+      // 注意: api 实例响应拦截器已 unwrap => recommendPlan 直接返回 data(非 {data})
       const res = await recommendPlan({
         budget: budget.value,
         risk_profile: riskProfile.value,
         fund_types: fundTypes.value.length ? fundTypes.value : null,
       })
-      rawStatus = res?.status ?? '?'
-      const b = res?.data ?? {}
+      const b = res ?? {}
       const picks = Array.isArray(b.picks) ? b.picks : []
       const isEmptyResp = typeof b === 'object' && b !== null && Object.keys(b).length === 0
       // 拿到有效结果(有picks 或 明确业务报错), 直接采用
