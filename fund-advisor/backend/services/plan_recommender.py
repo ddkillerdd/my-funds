@@ -31,9 +31,10 @@ logger = logging.getLogger(__name__)
 #   step-3.7 是推理模型, response_format 时 content 常为 None(仅取到 reasoning), 兜底
 _MODEL_CHAIN = [
     "minimaxai/minimax-m3",
-    "deepseek-ai/deepseek-v4-flash",
     "stepfun-ai/step-3.7-flash",
 ]
+# 注: deepseek-ai/deepseek-v4-flash 已从荐基链移除(2026-08-03)。
+# 实测它对荐基长提示词+json_object 请求 0.6s 必返 529(上游限流), 只适合 advisor 的短维度请求。
 
 # 规则层收敛到的候选上限(喂给 AI)
 _RULE_TOP_N = 20
