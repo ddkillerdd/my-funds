@@ -1,0 +1,47 @@
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+*.so
+
+# ─── 环境/密钥（绝不提交）───
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ─── 数据/运行时（本地生成, 不入库）───
+fund-advisor/data/
+*.sqlite3
+*.db
+*.sqlite
+tmp/
+
+# ─── 前端（node_modules/dist 已在 frontend/.gitignore, 这里兜底）───
+node_modules/
+dist/
+build/
+
+# ─── 日志 ───
+*.log
+logs/
+
+# ─── OS / 编辑器 ───
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── 测试/临时 ───
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
