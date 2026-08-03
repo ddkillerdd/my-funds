@@ -55,6 +55,8 @@ class PlanBacktestService:
             try:
                 _set_task(task_id, status="running", progress="回测中...")
                 svc = PlanBacktestService(self._new_db_session())
+                sim_svc = SimulatorService(svc.db)
+                svc._ensure_fund_history(sim_svc, funds_json)
                 result = svc.run_backtest(
                     funds_json, windows=windows_p,
                     target_vol=target_vol, friction_band_pp=friction_band_pp,
@@ -70,6 +72,35 @@ class PlanBacktestService:
     def _new_db_session(self):
         from backend.database import SessionLocal
         return SessionLocal()
+
+    # ─────────────────────────────────────────
+    #  回测前确保每只基金有历史(候选新基金常无主库历史)
+    #  无历史 -> 从天天基金拉~2年存临时表(不污染主库)
+    # ─────────────────────────────────────────
+    def _ensure_fund_history(self, sim_svc: SimulatorService, funds: List[dict]) -> None:
+        from backend.models.nav_history import FundNavHistory
+        from sqlalchemy import select, func
+        import asyncio
+
+        for fin in funds:
+            code = fin.get("fund_code")
+            if not code:
+                continue
+            has = self.db.execute(
+                select(func.count()).select_from(FundNavHistory).where(
+                    FundNavHistory.fund_code == code
+                )
+            ).scalar()
+            if has and has > 0:
+                continue  # 主库已有
+            tmp_navs = sim_svc._nav_from_tmp(code)
+            if tmp_navs:
+                continue
+            try:
+                asyncio.run(sim_svc.fetch_remote_fund(code, fin.get("fund_name") or ""))
+                logger.info("plan backtest auto-fetched history for %s", code)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("plan backtest fetch %s failed: %s", code, e)
 
     # ─────────────────────────────────────────
     #  主回测(同步, 供后台线程调用)
@@ -88,6 +119,7 @@ class PlanBacktestService:
             windows=windows,
             target_vol=target_vol,
             friction_band_pp=friction_band_pp,
+            allow_default_portfolio=False,
         )
         # 为每个窗口追加 回撤修复时长 + 盈利概率
         for wd_str, win in data.get("windows", {}).items():

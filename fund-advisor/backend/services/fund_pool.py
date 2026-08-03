@@ -125,7 +125,12 @@ class FundPoolService:
                 (FundCandidate.fund_code.like(f"%{keyword}%"))
                 | (FundCandidate.fund_name.like(f"%{keyword}%"))
             )
-        q = q.order_by(FundCandidate.nav_change_pct.desc().nullslast()).limit(limit)
+        # MySQL 不支持 NULLS LAST (PostgreSQL 语法) -> 用 nav_change_pct 可能为 null, 加 IS NULL 排序保证稳定
+        q = q.order_by(
+            FundCandidate.nav_change_pct.is_(None),  # False(非空)在前
+            FundCandidate.nav_change_pct.desc(),
+            FundCandidate.fund_code.asc(),
+        ).limit(limit)
         rows = self.db.execute(q).scalars().all()
         return [self._to_dict(r) for r in rows]
 

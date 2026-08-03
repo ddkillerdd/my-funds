@@ -107,10 +107,14 @@ class SimulatorService:
         warmup: int = 252,
         target_vol: float = 0.15,
         friction_band_pp: float = 5.0,
+        allow_default_portfolio: bool = True,
     ) -> dict:
         """执行回测并返回完整响应(窗口/每日盈亏/盈利判定/优化建议)。
 
         funds_in: [{"fund_code","fund_name","amount"}, ...]
+        allow_default_portfolio: True 时, 若提交基金全部无历史,
+            静默回退到当前持仓组合(RFC-016 模拟器默认行为);
+            False 时(投资方案场景)抛错, 绝不静默替换成别的基金。
         """
         info = self._fund_info_map()
         funds_used = []
@@ -136,6 +140,11 @@ class SimulatorService:
 
         # 默认: 用当前持仓组合(等权, 总成本=10000 便于看百分比)
         if not engine_funds:
+            if not allow_default_portfolio:
+                raise ValueError(
+                    "所选基金均无可回测历史数据(主库与临时表均无), 无法验证方案。"
+                    "请先拉取这些基金的历史净值(基金池/荐基后自动补齐)再回测。"
+                )
             engine_funds, funds_used, total_amount = self._default_portfolio(info)
 
         # 初始总资金

@@ -249,7 +249,25 @@ class PlanService:
             .order_by(FundNavHistory.nav_date.desc())
             .limit(1)
         ).scalar_one_or_none()
-        return row
+        if row:
+            return row
+        # 主库无历史 -> 从临时表(回测/荐基自动拉取的候选基金)取最新净值
+        from backend.models.sim_tmp_fund import SimTmpFund
+        import json as _json
+        tmp = self.db.execute(
+            select(SimTmpFund.nav_json).where(
+                SimTmpFund.fund_code == fund_code
+            )
+        ).scalar_one_or_none()
+        if tmp:
+            try:
+                arr = _json.loads(tmp)
+                if arr:
+                    # arr 形如 [{"d":"date","n":1.9,...}], 取最后一条即最新
+                    return Decimal(str(arr[-1]["n"]))
+            except Exception:
+                pass
+        return None
 
     def _upsert_plan_holding(self, plan_id, code, wgt_pct, amount, shares, nav):
         row = self.db.execute(
