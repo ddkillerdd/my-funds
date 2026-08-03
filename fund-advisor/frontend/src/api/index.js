@@ -233,7 +233,7 @@ export function getPlanPoolCounts(params) {
   return api.get('/plan/pool/counts', { params })
 }
 export function recommendPlan(payload) {
-  return api.post('/plan/recommend', payload)
+  return api.post('/plan/recommend', payload, { timeout: 300000 })
 }
 export function allocatePlan(payload) {
   return api.post('/plan/allocate', payload)

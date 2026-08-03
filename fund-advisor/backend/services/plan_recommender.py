@@ -203,7 +203,7 @@ class PlanRecommenderService:
         pending = set(tasks.keys())
         fail_msgs = []
         winner = None
-        deadline = asyncio.get_event_loop().time() + 95
+        deadline = asyncio.get_event_loop().time() + 70
         while pending:
             remain = deadline - asyncio.get_event_loop().time()
             if remain <= 0:
