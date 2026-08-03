@@ -11,7 +11,6 @@ import AdvisorView from '../views/AdvisorView.vue'
 import RecommendView from '../views/RecommendView.vue'
 import SimulatorView from '../views/SimulatorView.vue'
 import AdaptiveView from '../views/AdaptiveView.vue'
-import PlanView from '../views/PlanView.vue'
 
 const routes = [
   {
@@ -37,12 +36,6 @@ const routes = [
     name: 'Simulator',
     component: SimulatorView,
     meta: { title: '策略回测' },
-  },
-  {
-    path: '/plan',
-    name: 'Plan',
-    component: PlanView,
-    meta: { title: '投资方案' },
   },
   {
     path: '/adaptive',

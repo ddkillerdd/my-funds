@@ -152,6 +152,10 @@
           />
         </el-card>
       </el-tab-pane>
+      <!-- ───────────── 长线投资方案 ───────────── -->
+      <el-tab-pane label="长线投资" name="plan">
+        <PlanWizard />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -159,6 +163,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { getFundTiming, screenFunds } from '../api/index.js'
+import PlanWizard from './PlanWizard.vue'
 
 const activeTab = ref('timing')
 

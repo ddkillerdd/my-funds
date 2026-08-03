@@ -1,10 +1,5 @@
 <template>
-  <div class="plan-view">
-    <div class="page-header">
-      <h2 class="page-title">长期投资方案中心</h2>
-      <span class="tip-text">AI 荐基 → 智能配比 → 回测验证 → 分批建仓；仅供参考，不构成投资建议</span>
-    </div>
-
+  <div class="plan-wizard">
     <el-tabs v-model="activeTab" type="card">
       <!-- ───────────── 向导: 新建方案 ───────────── -->
       <el-tab-pane label="新建方案" name="wizard">
@@ -387,14 +382,16 @@ async function runRecommend() {
       budget: budget.value,
       risk_profile: riskProfile.value,
       fund_types: fundTypes.value.length ? fundTypes.value : null,
-    })
-    if (!res.data.picks || !res.data.picks.length) {
-      recError.value = '没有候选基金，可先温启动基金池（见后端缓存）或稍后重试'
+    }) 
+    const body = res?.data || {}
+    const picks = Array.isArray(body.picks) ? body.picks : []
+    if (!picks.length) {
+      recError.value = body.detail || body.error || '没有候选基金，可先温启动基金池或稍后重试'
       return
     }
-    recResult.value = res.data
+    recResult.value = body
     Object.keys(selectedCodes).forEach((k) => delete selectedCodes[k])
-    res.data.picks.forEach((p) => { selectedCodes[p.fund_code] = true })
+    picks.forEach((p) => { selectedCodes[p.fund_code] = true })
   } catch (e) {
     recError.value = e?.response?.data?.detail || e.message || '荐基失败'
   } finally {
@@ -403,9 +400,10 @@ async function runRecommend() {
 }
 
 function toAllocate() {
+  const recPicks = recResult.value?.picks || []
   const selected = Object.entries(selectedCodes)
     .filter(([, v]) => v)
-    .map(([code]) => recResult.value.picks.find((p) => p.fund_code === code))
+    .map(([code]) => recPicks.find((p) => p.fund_code === code))
     .filter(Boolean)
   if (selected.length < 1) { ElMessage.warning('请至少勾选 1 只基金'); return }
   execAllocate(selected)
