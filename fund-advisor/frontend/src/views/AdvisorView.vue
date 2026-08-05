@@ -410,7 +410,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Promotion, List, Warning, DataAnalysis, Tickets, WarnTriangleFilled, CircleCheckFilled, Histogram, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 

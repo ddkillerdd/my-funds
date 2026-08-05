@@ -121,3 +121,9 @@
 - 语法/配置断言通过 (所有角色均 nano-9b, ds-flash 无首选)
 - backend systemd 重启生效 (PID 3614674)
 - 完整全量分析验证待下次触发时观察
+
+## 2026-08-05 AI顾问页面空白修复
+- 症状: /advisor 页面空白(全站其他页正常)
+- 根因: AdvisorView.vue 用了 computed(reportDate) 但 import { ref, onMounted } from "vue" 漏导 computed → ReferenceError: computed is not defined → setup崩溃 → 白屏
+- 修复: import 加 computed
+- 验证: chromium headless 确认 JS无报错, 页面渲染出 AI投资顾问/市场环境分析/总资金 等
