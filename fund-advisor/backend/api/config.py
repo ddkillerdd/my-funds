@@ -14,7 +14,9 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend.services.config_service import (
+    get_available_capital,
     get_total_capital,
+    set_available_capital,
     set_total_capital,
 )
 
@@ -39,5 +41,22 @@ def update_total_capital(body: CapitalIn, db: Session = Depends(get_db)):
     try:
         set_total_capital(db, body.value, body.note)
         return {"ok": True, "total_capital": body.value}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"保存失败: {e}")
+
+
+@router.get("/available-capital", summary="读取可用增量资金(RFC-021)")
+def read_available_capital(db: Session = Depends(get_db)):
+    try:
+        return {"available_capital": get_available_capital(db), "key": "available_capital_rmb"}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取失败: {e}")
+
+
+@router.put("/available-capital", summary="设置可用增量资金(RFC-021)")
+def update_available_capital(body: CapitalIn, db: Session = Depends(get_db)):
+    try:
+        set_available_capital(db, body.value, body.note)
+        return {"ok": True, "available_capital": body.value}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"保存失败: {e}")

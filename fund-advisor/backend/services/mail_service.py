@@ -88,18 +88,26 @@ class MailService:
         return False
 
     def _build_html_report(self, analysis: dict) -> str:
-        # RFC-020: 读取总资金基准(前端可调), 用于说明操作金额的分配基准
-        total_capital = None
-        try:
-            from backend.services.config_service import get_total_capital
-            from backend.database import SessionLocal
-            _db = SessionLocal()
+        # RFC-021: 金额基准优先取报告自带的 incremental_allocation(含可用增量资金/目标盘子)
+        # 回退: 从 config_service 读 available_capital
+        alloc_meta = analysis.get("incremental_allocation") if isinstance(analysis.get("incremental_allocation"), dict) else None
+        base_amt = None
+        base_notes = []
+        if alloc_meta:
+            base_amt = alloc_meta.get("available_capital")
+            base_notes = alloc_meta.get("notes", [])
+        else:
+            base_amt = None
             try:
-                total_capital = get_total_capital(_db)
-            finally:
-                _db.close()
-        except Exception:  # noqa: BLE001
-            total_capital = None
+                from backend.services.config_service import get_available_capital
+                from backend.database import SessionLocal
+                _db = SessionLocal()
+                try:
+                    base_amt = get_available_capital(_db)
+                finally:
+                    _db.close()
+            except Exception:  # noqa: BLE001
+                base_amt = None
 
         # 构建 基金代码→名称 映射(供盘中速览显示友好名称)
         code_names = {}
@@ -120,7 +128,7 @@ class MailService:
         if health_rows:
             parts.append(self._html_section_title("持仓健康度"))
             parts.append(health_rows)
-        action_rows = self._html_action_rows(analysis.get("actions", []), total_capital)
+        action_rows = self._html_action_rows(analysis.get("actions", []), base_amt, alloc_meta=alloc_meta)
         if action_rows:
             parts.append(self._html_section_title("操作建议"))
             parts.append(action_rows)
@@ -229,40 +237,63 @@ class MailService:
         rows.append("</tbody></table>")
         return "\n".join(rows)
 
-    def _html_action_rows(self, items: list, total_capital: Optional[float] = None) -> str:
+    def _html_action_rows(self, items: list, available_capital: Optional[float] = None,
+                          alloc_meta: Optional[dict] = None) -> str:
         if not items:
             return ""
-        if total_capital is not None:
+        # RFC-021: 金额基准说明 — 目标盘子 = 现有持仓 + 可用增量资金
+        alloc_notes = (alloc_meta or {}).get("notes") or []
+        has_amounts = any(
+            (a.get("current_amount") is not None or a.get("target_amount") is not None)
+            for a in items
+        )
+        if alloc_notes:
+            base_note = ('<p style="margin:4px 0 10px 0;color:#606266;font-size:13px;'
+                         'background:#f5f7fa;padding:8px 12px;border-radius:4px;">'
+                         + "；".join(alloc_notes)
+                         + '</p>')
+        elif available_capital is not None:
             try:
-                tc = float(total_capital)
-                base_note = ('<p style="margin:4px 0 10px 0;color:#909399;font-size:13px;'
+                ac = float(available_capital)
+                base_note = ('<p style="margin:4px 0 10px 0;color:#606266;font-size:13px;'
                              'background:#f5f7fa;padding:8px 12px;border-radius:4px;">'
-                             '金额基准：以下操作金额按总资金 <strong>{base}</strong> 元分配（变动=目标仓位×总资金-当前市值）。'
-                             '</p>').format(base=self._fmt_amt(tc))
+                             '可用增量资金 <strong>{amt}</strong> 元，加仓金额在现有持仓市值基础上按目标仓位分配。'
+                             '</p>').format(amt=self._fmt_amt(ac))
             except (TypeError, ValueError):
                 base_note = ""
         else:
-            base_note = (
-                '<p style="margin:4px 0 10px 0;color:#909399;font-size:13px;'
-                'background:#f5f7fa;padding:8px 12px;border-radius:4px;">'
-                '金额基准：未设置总资金，按当前持仓总市值估算。</p>'
-            )
+            base_note = ('<p style="margin:4px 0 10px 0;color:#606266;font-size:13px;'
+                         'background:#f5f7fa;padding:8px 12px;border-radius:4px;">'
+                         '未设置可用增量资金，金额按当前持仓市值口径估算。</p>')
         action_labels = {
             "add": "加仓",
             "buy": "买入",
+            "increase": "加仓",
             "reduce": "减仓",
             "sell": "卖出",
             "hold": "持有",
             "watch": "关注",
         }
+        # 金额列是否展开为“现持→目标”
+        show_amount_transition = has_amounts
         rows = []
         rows.append('<table style="width:100%;border-collapse:collapse;margin-bottom:20px">')
-        rows.append('<thead><tr style="background:#f5f7fa">'
-                    '<th style="padding:8px;text-align:left">代码</th>'
-                    '<th style="padding:8px;text-align:left">名称</th>'
-                    '<th style="padding:8px;text-align:left">操作</th>'
-                    '<th style="padding:8px;text-align:left">金额(元)</th>'
-                    '<th style="padding:8px;text-align:left">理由</th></tr></thead><tbody>')
+        if show_amount_transition:
+            rows.append('<thead><tr style="background:#f5f7fa">'
+                        '<th style="padding:8px;text-align:left">代码</th>'
+                        '<th style="padding:8px;text-align:left">名称</th>'
+                        '<th style="padding:8px;text-align:left">操作</th>'
+                        '<th style="padding:8px;text-align:left">现持</th>'
+                        '<th style="padding:8px;text-align:left">目标</th>'
+                        '<th style="padding:8px;text-align:left">操作金额(元)</th>'
+                        '<th style="padding:8px;text-align:left">理由</th></tr></thead><tbody>')
+        else:
+            rows.append('<thead><tr style="background:#f5f7fa">'
+                        '<th style="padding:8px;text-align:left">代码</th>'
+                        '<th style="padding:8px;text-align:left">名称</th>'
+                        '<th style="padding:8px;text-align:left">操作</th>'
+                        '<th style="padding:8px;text-align:left">金额(元)</th>'
+                        '<th style="padding:8px;text-align:left">理由</th></tr></thead><tbody>')
         for a in items:
             label = action_labels.get(a.get("action", ""), a.get("action", ""))
             priority = a.get("priority", "")
@@ -278,23 +309,47 @@ class MailService:
                     amount_str = "-{:.2f}".format(abs(amount))
                 else:
                     amount_str = "0.00"
-            amount_color = "#d4380d" if a.get("action") in ("buy", "add") else ("#389e0d" if a.get("action") in ("reduce", "sell") else "#606266")
+            amount_color = "#389e0d" if a.get("action") in ("buy", "add", "increase") else ("#d4380d" if a.get("action") in ("reduce", "sell") else "#606266")
             if priority == "high":
                 reason += " [高优]"
-            rows.append("""<tr>
-                <td style="padding:8px">{code}</td>
-                <td style="padding:8px">{name}</td>
-                <td style="padding:8px">{label}</td>
-                <td style="padding:8px;color:{amount_color};font-weight:600">{amount_str}</td>
-                <td style="padding:8px">{reason}</td>
-            </tr>""".format(
-                code=a.get("fund_code", ""),
-                name=a.get("fund_name", ""),
-                label=label,
-                amount_str=amount_str,
-                amount_color=amount_color,
-                reason=reason,
-            ))
+            cur = a.get("current_amount")
+            tgt = a.get("target_amount")
+            cur_str = self._fmt_amt(cur) if cur is not None else "--"
+            tgt_str = self._fmt_amt(tgt) if tgt is not None else "--"
+            if show_amount_transition:
+                rows.append("""<tr>
+                    <td style="padding:8px">{code}</td>
+                    <td style="padding:8px">{name}</td>
+                    <td style="padding:8px">{label}</td>
+                    <td style="padding:8px">{cur}</td>
+                    <td style="padding:8px">{tgt}</td>
+                    <td style="padding:8px;color:{amount_color};font-weight:600">{amount_str}</td>
+                    <td style="padding:8px">{reason}</td>
+                </tr>""".format(
+                    code=a.get("fund_code", ""),
+                    name=a.get("fund_name", ""),
+                    label=label,
+                    cur=cur_str,
+                    tgt=tgt_str,
+                    amount_str=amount_str,
+                    amount_color=amount_color,
+                    reason=reason,
+                ))
+            else:
+                rows.append("""<tr>
+                    <td style="padding:8px">{code}</td>
+                    <td style="padding:8px">{name}</td>
+                    <td style="padding:8px">{label}</td>
+                    <td style="padding:8px;color:{amount_color};font-weight:600">{amount_str}</td>
+                    <td style="padding:8px">{reason}</td>
+                </tr>""".format(
+                    code=a.get("fund_code", ""),
+                    name=a.get("fund_name", ""),
+                    label=label,
+                    amount_str=amount_str,
+                    amount_color=amount_color,
+                    reason=reason,
+                ))
         rows.append("</tbody></table>")
         return base_note + "\n" + "\n".join(rows)
 

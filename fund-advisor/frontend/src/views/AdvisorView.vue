@@ -13,7 +13,7 @@
               当前报告: {{ activeReportTime }}
             </span>
             <span class="capital-wrap">
-              <span class="capital-label">总资金(¥)</span>
+              <span class="capital-label">可用增量资金(¥)</span>
               <el-input-number
                 v-model="totalCapital"
                 :min="0"
@@ -323,6 +323,34 @@
             </el-descriptions>
           </el-card>
 
+          <!-- RFC-021: 增量资金分配 -->
+          <el-card v-if="report.incremental_allocation" shadow="hover" class="section-card">
+            <template #header>
+              <div class="section-header">
+                <el-icon :size="20"><Money /></el-icon>
+                <span>增量资金分配</span>
+              </div>
+            </template>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="目标盘子">
+                {{ fmtMoney(report.incremental_allocation.total_scale) }} 元
+                <span class="dim-hint">= 现有持仓 + 可用增量资金</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="可用增量资金">
+                {{ fmtMoney(report.incremental_allocation.available_capital) }} 元
+              </el-descriptions-item>
+              <el-descriptions-item label="本次已分配过金">
+                {{ fmtMoney(report.incremental_allocation.allocated_capital) }} 元
+                <span v-if="!report.incremental_allocation.fully_allocated" class="amt-out">（增量不足, 已按风险配比压缩）</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="分配说明" v-if="report.incremental_allocation.notes && report.incremental_allocation.notes.length">
+                <template v-for="(n, i) in report.incremental_allocation.notes" :key="i">
+                  <div>{{ n }}</div>
+                </template>
+              </el-descriptions-item>
+            </el-descriptions>
+          </el-card>
+
           <!-- Debate Verdict -->
           <el-card v-if="report.debate_verdict" shadow="hover" class="section-card">
             <template #header>
@@ -411,7 +439,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { Promotion, List, Warning, DataAnalysis, Tickets, WarnTriangleFilled, CircleCheckFilled, Histogram, TrendCharts } from '@element-plus/icons-vue'
+import { Promotion, List, Warning, DataAnalysis, Tickets, WarnTriangleFilled, CircleCheckFilled, Histogram, TrendCharts, Money } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
@@ -584,30 +612,30 @@ async function loadMoreHistory() {
   }
 }
 
-// RFC-020: 读取/保存总资金(前端可调, 下次分析动态生效)
+// RFC-021: 读取/保存「可用增量资金」(本次愿投入的子弹, 下次分析动态生效)
 async function loadTotalCapital() {
   try {
-    const resp = await fetch('/api/config/total-capital')
+    const resp = await fetch('/api/config/available-capital')
     if (!resp.ok) return
     const data = await resp.json()
-    totalCapital.value = data.total_capital != null ? data.total_capital : null
+    totalCapital.value = data.available_capital != null ? data.available_capital : null
   } catch {
     // silent
   }
 }
 async function saveTotalCapital(val) {
   try {
-    const resp = await fetch('/api/config/total-capital', {
+    const resp = await fetch('/api/config/available-capital', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: val, note: '用户前端设置总资金' }),
+      body: JSON.stringify({ value: val, note: '用户前端设置可用增量资金' }),
     })
     if (!resp.ok) throw new Error('保存失败')
     const data = await resp.json()
-    totalCapital.value = data.total_capital
-    ElMessage.success('总资金已更新, 下次分析按新资金定价')
+    totalCapital.value = data.available_capital
+    ElMessage.success('可用增量资金已更新, 下次分析按新资金计算加仓金额')
   } catch (e) {
-    ElMessage.error('总资金保存失败: ' + e.message)
+    ElMessage.error('可用增量资金保存失败: ' + e.message)
   }
 }
 
@@ -731,6 +759,12 @@ onMounted(async () => {
   font-size: 12px;
   color: #606266;
   white-space: nowrap;
+}
+
+.dim-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 6px;
 }
 
 .exec-row {

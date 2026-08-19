@@ -1,4 +1,32 @@
 
+## RFC-021 增量资金分配修复 (2026-08-06)
+
+### 问题(用户反馈"报告错漏百出")
+- 用户设 `total_capital_rmb=10`(本意=本次可用增量资金/子弹)
+- 旧逻辑把 total_capital 误当「组合总市值」作金额基数 → `current_amount=10×权重`错、`target_amount=10×47.7%=4.77`谬误
+- 单只持仓(纳斯达克1.49)但权重100% → 旧逻辑误判「减仓」, 输出 action_amount=-5.26 荒谬
+- 根因: 「现有持仓市值」与「可用增量资金」被糊成一个 total_capital 字段
+
+### 修复(底层从引擎改)
+- 新增 `../fund-analyzer/engine/allocation.py` 组合级增量分配器
+  - 目标盘子 T = Σcurrent_mv + available_capital
+  - 每基金 ideal_i = T × target_weight(方向+波动率目标已含风险调整, 稳健不依赖收益预测)
+  - action_amount = ideal - current_mv (>0加/<0减); 增量不足按 ideal 比例压缩
+  - 分配方法: 采用风险平价思想+引擎既有 target_weight(调研结论: 比纯MVO/收益排名稳健)
+- `engine/decision.py build_position_action`: 新增 current_mv 参数, current_amount=真实现值
+- `engine/analyzer.py`: 金额基准改为 Σcurrent_mv+可用资金; 新增 `_apply_incremental_allocation` 在 Step2后统一精修 target/action 金额; 正action_amount时把hold/reduce改判increase, 负时改判reduce
+- `backend/models.py PortfolioInput`: 拆 total_capital(兼容) + available_capital(新)
+- `backend/services/config_service.py`: 新增 get/set_available_capital, key=available_capital_rmb, 旧key回退
+- `backend/api/config.py`: 新增 GET/PUT /api/config/available-capital
+- 前端 AdvisorView: 标签改「可用增量资金」, 新增「增量资金分配」展示卡(目标盘子/可用/已分配/说明)
+- 报告输出新增 incremental_allocation 摘要 + holdings_health.current_amount/current_mv/total_scale/allocated_capital
+
+### 已验证(端到端 report id=45)
+- 018044 纳斯达克: 现持1.49 → 目标5.48 → 建议加仓3.99 (之前是错的 减仓-5.26/目标4.77)
+- incremental_allocation: 目标盘子11.49 = 现有1.49 + 可用10, 分配3.99, 足额
+- 前端 build OK, 后端 systemd 重启生效, 语法全通过
+
+
 
 ### v5.0 — RFC-005 多模型辩论 ✅ 完成 (2026-07-30 22:10-22:50)
 

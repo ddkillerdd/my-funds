@@ -242,14 +242,12 @@ class AdvisorService:
             for h in fa_holdings:
                 h.mv_ratio = round(h.current_mv / total_mv * 100, 1)
 
-        # RFC-020: 用户在前端设置的总资金(可变)作为绝对操作金额的定价基准;
-        # 未设置则退回 None(由引擎用当前总市值)。
-        from backend.services.config_service import get_total_capital
-        total_capital = get_total_capital(self.db)
+        # RFC-021: 用户在前端设置的「可用增量资金」(子弹)。与现有持仓市值分开:
+        # 目标盘子 = Σ current_mv + available_capital。未设置则退回 None(引擎用现有市值)。
+        # 旧字段 total_capital 保留兼容(现等价于可用资金)。
+        from backend.services.config_service import get_available_capital
+        available_capital = get_available_capital(self.db)
 
-        # RFC-020 块5: 市场基准对比 — 组合整体以沪深300为基准, 填充
-        # benchmark_nav_history 供 compute_peer_benchmark 用(波动/超额对比)。
-        # 抓取失败则静默跳过(基准对比是增强, 不影响主决策)。
         benchmark_points = None
         try:
             from backend.services.index_bindings import fetch_benchmark_points
@@ -263,7 +261,8 @@ class AdvisorService:
 
         return PortfolioInput(
             holdings=fa_holdings,
-            total_capital=total_capital,
+            total_capital=available_capital,
+            available_capital=available_capital,
             benchmark_nav_history=benchmark_points,
         )
 
@@ -442,6 +441,10 @@ class AdvisorService:
                 "target_weight_pct": ds.action.get("target_weight_pct") if ds and ds.action else None,
                 "action_amount": ds.action.get("action_amount") if ds and ds.action else None,
                 "target_amount": ds.action.get("target_amount") if ds and ds.action else None,
+                "current_amount": ds.action.get("current_amount") if ds and ds.action else None,
+                "current_mv": ds.action.get("current_mv") if ds and ds.action else None,
+                "total_scale": ds.action.get("total_scale") if ds and ds.action else None,
+                "allocated_capital": ds.action.get("allocated_capital") if ds and ds.action else None,
                 "data_citations": [],
                 # v3 新增字段
                 "v3_consensus": ds.consensus_label if ds else "",
@@ -659,6 +662,9 @@ class AdvisorService:
                     for fd in report.per_fund_diagnosis
                 ),
             },
+
+            # RFC-021: 组合级增量资金分配摘要
+            "incremental_allocation": getattr(report, "_alloc_meta", None),
 
             # 元数据
             "generated_at": report.generated_at,

@@ -474,10 +474,17 @@ def _action_from_weights(target: float, current: float) -> str:
 def build_position_action(qi, regime: str, current_weight: float,
                           target_vol: float = DEFAULT_TARGET_VOL,
                           friction_band_pp: float = FRICTION_BAND_PP,
-                          total_mv: float = 0.0) -> dict:
+                          total_mv: float = 0.0,
+                          current_mv: float = 0.0) -> dict:
     """RFC-014 总入口：L1 方向 → L2 波动率目标仓位 → L3 风控 → 唯一动作结构。
 
     幂等、零 LLM 依赖。返回 dict（PositionAction.to_dict() 同构）。
+
+    RFC-021: 拆分「现有持仓市值」与「金额基准」。
+    - current_mv: 该基金现有持仓市值(元) → current_amount 直接用真实值
+    - total_mv:   金额基准(目标盘子 scale)。组合级增量分配在 analyzer 分析完后由
+                  allocation.allocate_incremental_capital 统一重算 target_amount,
+                  避免单基金独立缩放过早污染绝对金额。
 
     Args:
         qi: QuantIndicators
@@ -485,7 +492,8 @@ def build_position_action(qi, regime: str, current_weight: float,
         current_weight: 当前权重(十进制, 0~1)
         target_vol: 目标年化波动率(默认0.15)
         friction_band_pp: 换手触发带(百分点, 默认5)
-        total_mv: 组合总市值(元)。>0 时额外计算绝对操作金额 action_amount。
+        total_mv: 金额基准(元)。>0 时额外计算绝对操作金额 action_amount。
+        current_mv: 该基金现有持仓市值(元)。>0 时 current_amount 用真实值。
     """
     # L1 方向
     direction = compute_direction(qi, regime)
@@ -537,10 +545,17 @@ def build_position_action(qi, regime: str, current_weight: float,
     if friction_held:
         reasons.append(f"距目标<{friction_band_pp:.0f}pp, 保持不动")
 
-    # 绝对操作金额（组合总市值已知时）
-    current_amount = total_mv * current_weight if total_mv > 0 else None
+    # 绝对操作金额: current = 真实现有持仓; target 由组合级分配器在 analyzer 层统一重算
     target_amount = total_mv * target if total_mv > 0 else None
     change_amount = total_mv * (target - current_weight) if total_mv > 0 else None
+    current_amount = target_amount * current_weight if total_mv > 0 else None
+    if current_mv > 0:
+        # RFC-021: current_amount 应反映该基金真实现有市值, 而非“基准×权重”
+        current_amount = current_mv
+        # 若已知现值和目标盘子, change_amount 直接按元: 目标持有额-现持有额
+        if total_mv > 0:
+            target_amount = total_mv * target
+            change_amount = target_amount - current_amount
 
     return {
         "fund_code": qi.fund_code,
@@ -550,7 +565,7 @@ def build_position_action(qi, regime: str, current_weight: float,
         "target_weight": round(target, 4),
         "change_weight_pp": round((target - current_weight) * 100, 2),
         "target_weight_pct": round(target * 100, 1),
-        # 绝对金额（元）: 该持有的金额 / 现值 / 需操作的金额(正加负减)
+        # 绝对金额（元）, 组合级分配器最终精修
         "target_amount": round(target_amount, 2) if target_amount is not None else None,
         "current_amount": round(current_amount, 2) if current_amount is not None else None,
         "action_amount": round(change_amount, 2) if change_amount is not None else None,

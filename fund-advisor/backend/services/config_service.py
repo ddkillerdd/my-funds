@@ -21,6 +21,8 @@ logger = logging.getLogger("fund.config")
 
 # 配置键常量
 KEY_TOTAL_CAPITAL = "total_capital_rmb"
+# RFC-021: 可用增量资金(元)。与新语义解耦; 旧 total_capital_rmb 保留作历史兼容回退。
+KEY_AVAILABLE_CAPITAL = "available_capital_rmb"
 
 
 def get_config(db: Session, key: str) -> Optional[str]:
@@ -57,3 +59,21 @@ def get_total_capital(db: Session) -> Optional[float]:
 
 def set_total_capital(db: Session, value: float, note: str = "用户前端设置总资金") -> AppConfig:
     return set_config(db, KEY_TOTAL_CAPITAL, str(value), note)
+
+
+def get_available_capital(db: Session) -> Optional[float]:
+    """RFC-021: 读取用户在前端设置的「可用增量资金」(元), 即本次愿投入的子弹。
+    优先新 key; 旧 total_capital_rmb 存在时作为回退(无新 key)。
+    """
+    raw = get_config(db, KEY_AVAILABLE_CAPITAL)
+    if raw:
+        try:
+            return float(Decimal(str(raw).strip()))
+        except Exception:
+            logger.warning("available_capital_rmb 配置值非法: %r", raw)
+    # 无新配置 → 回退旧 total_capital(旧语义即“愿投入总盘子”)
+    return get_total_capital(db)
+
+
+def set_available_capital(db: Session, value: float, note: str = "用户前端设置可用增量资金") -> AppConfig:
+    return set_config(db, KEY_AVAILABLE_CAPITAL, str(value), note)

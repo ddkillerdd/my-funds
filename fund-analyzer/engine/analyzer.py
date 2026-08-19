@@ -299,10 +299,12 @@ class Analyzer:
 
             # === Debate (with model sources for cross-model comparison) ===
             if fd.trend_view and fd.risk_view and fd.value_view and fd.technical_view:
-                # RFC-020: 绝对操作金额的定价基准。用户设置了总资金(total_capital)时
-                # 用它(替代当前总市值 total_market_value), 让建议金额按用户愿投入的
-                # 总盘子而非仅当前持仓定价; 未设置则退回当前总市值。
-                _amount_scale = float(portfolio.total_capital) if portfolio.total_capital else float(ground.get("total_market_value", 0) or 0)
+                # RFC-021: 金额基准 = 现有总持仓 + 可用增量资金(目标盘子);
+                # current_mv 传该基金真实现有市值。组合级增量分配在分析完所有
+                # 基金后统一精修 target_amount/action_amount (见 Step 2 末尾)。
+                _current_total = float(ground.get("total_market_value", 0) or 0)
+                _avail = portfolio.available_capital if portfolio.available_capital is not None else portfolio.total_capital
+                _amount_scale = _current_total + (float(_avail) if _avail else 0.0)
                 fd.debate_summary = self._debate_synthesis(
                     qi,
                     fd.trend_view,
@@ -311,6 +313,7 @@ class Analyzer:
                     fd.technical_view,
                     model_sources=model_sources,
                     total_mv=_amount_scale,
+                    current_mv=float(qi.current_mv or 0),
                     strategy_config=self.strategy_configs.get(holding.fund_code),
                 )
             else:
@@ -328,6 +331,16 @@ class Analyzer:
                 degraded_steps_all.append(f"debate_{holding.fund_code}")
 
             report.per_fund_diagnosis.append(fd)
+
+        # ==========================================================
+        # Step 2.5: RFC-021 组合级增量资金分配修正
+        # 用现有持仓市值 + 可用增量资金, 统一重算每只基金的目标持有金额
+        # 与操作金额(加/减多少元)。修正旧逻辑把可用资金误当组合总市值的缺陷。
+        # ==========================================================
+        try:
+            self._apply_incremental_allocation(report, per_fund_qi, portfolio)
+        except Exception as _aerr:  # noqa: BLE001
+            logger.warning("incremental allocation failed, keep per-fund amounts: %s", _aerr)
 
         # ==========================================================
         # Step 3: Portfolio synthesis
@@ -631,6 +644,7 @@ class Analyzer:
         technical: TechnicalViewDiagnosis,
         model_sources: Optional[Dict[str, str]] = None,
         total_mv: float = 0.0,
+        current_mv: float = 0.0,
         strategy_config: Optional["FundStrategyConfig"] = None,
     ) -> DebateSummary:
         """Run debate synthesis with model-source-aware prompt.
@@ -648,11 +662,12 @@ class Analyzer:
         # mv_ratio 是百分数(如 31.5=31.5%), build_position_action 需要十进制(0~1)
         mv_pct = float(qi.mv_ratio or 0.0)
         current_weight = mv_pct / 100.0
-        _kw = {"total_mv": total_mv}
+        _kw = {}
         if strategy_config is not None:
             _kw["target_vol"] = strategy_config.target_vol
             _kw["friction_band_pp"] = strategy_config.friction_band_pp
-        quant_action = build_position_action(qi, regime, current_weight, **_kw)
+        quant_action = build_position_action(qi, regime, current_weight, total_mv=total_mv,
+                                             current_mv=current_mv, **_kw)
 
         try:
             # Build model-source-enriched prompt
@@ -726,6 +741,89 @@ class Analyzer:
                 model_reliability={v: 0.4 for v in set(model_sources.values())},
                 conflict_models=[],
             )
+
+    def _apply_incremental_allocation(
+        self,
+        report: "AnalysisReport",
+        per_fund_qi: List[QuantIndicators],
+        portfolio: PortfolioInput,
+    ) -> None:
+        """RFC-021: 组合级增量资金分配修正。
+
+        修正旧 RFC-020 把「可用增量资金」误当「组合总市值」作金额基数的缺陷:
+            - current_amount 现直接用该基金真实现有市值 (qi.current_mv)
+            - target_amount  = (现有总持仓 + 可用增量) × target_weight (风险调整后)
+            - action_amount  = target_amount - current_amount (>0 加 / <0 减)
+            增量不足时按风险调整后的 ideal_amount 比例压缩, 避免超额分配。
+        """
+        from engine.allocation import allocate_incremental_capital
+
+        avail = portfolio.available_capital
+        if avail is None:
+            avail = portfolio.total_capital
+        available_capital = float(avail) if avail and avail > 0 else 0.0
+
+        # 汇总各基金 current_mv 与 target_weight (来自 quant_action)
+        current_mv: Dict[str, float] = {}
+        target_weight: Dict[str, float] = {}
+        qi_by_code: Dict[str, QuantIndicators] = {}
+        for qi in per_fund_qi:
+            qi_by_code[qi.fund_code] = qi
+            current_mv[qi.fund_code] = float(getattr(qi, "current_mv", 0) or 0)
+
+        # 从每个诊断的 action dict 取 target_weight (量化动作已确定)
+        for fd in report.per_fund_diagnosis:
+            act = fd.debate_summary.action if fd.debate_summary else None
+            if not act:
+                continue
+            tw = act.get("target_weight")
+            if tw is not None:
+                target_weight[fd.fund_code] = float(tw)
+            elif fd.fund_code not in target_weight:
+                target_weight[fd.fund_code] = float(act.get("current_weight", 0) or 0)
+
+        alloc = allocate_incremental_capital(
+            current_mv=current_mv,
+            target_weight=target_weight,
+            available_capital=available_capital,
+        )
+
+        # 把分配结果写回每个诊断的 action (仅当该基金有分配条目)
+        for fd in report.per_fund_diagnosis:
+            if not fd.debate_summary or not fd.debate_summary.action:
+                continue
+            pf = alloc["per_fund"].get(fd.fund_code)
+            if pf is None:
+                continue
+            act = fd.debate_summary.action
+            act["current_mv"] = pf["current_mv"]
+            act["target_amount"] = pf["target_amount"]
+            act["action_amount"] = pf["action_amount"]
+            act["current_amount"] = pf["current_mv"]
+            act["total_scale"] = alloc["total_scale"]
+            act["allocated_capital"] = alloc["allocated_capital"]
+            # 操作金额语义: >0 加仓 / <0 减仓
+            if pf["action_amount"] and pf["action_amount"] > 0 and act.get("action") in ("hold", "reduce"):
+                act["action"] = "increase"
+            elif pf["action_amount"] and pf["action_amount"] < 0 and act.get("action") in ("hold", "increase"):
+                act["action"] = "reduce"
+            act["action_label"] = {
+                "buy": "买入", "increase": "加仓", "hold": "持有",
+                "reduce": "减仓", "sell": "卖出",
+            }.get(act.get("action"), "持有")
+            # 追加分配说明到 reason
+            _note = " | ".join(filter(None, alloc["notes"]))
+            if _note and "增量" not in (act.get("reason") or ""):
+                act["reason"] = ((act.get("reason") or "") + f" [{_note}]").strip()
+
+        # 附加到报告(组合层), 供前端展示增量分配摘要
+        report._alloc_meta = {  # type: ignore[attr-defined]
+            "total_scale": alloc["total_scale"],
+            "available_capital": round(available_capital, 2),
+            "allocated_capital": alloc["allocated_capital"],
+            "fully_allocated": alloc["fully_allocated"],
+            "notes": alloc["notes"],
+        }
 
     def _portfolio_synthesis(
         self,

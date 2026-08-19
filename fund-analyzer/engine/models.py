@@ -41,9 +41,12 @@ class PortfolioInput:
     """完整投资组合输入"""
     holdings: List[FundHolding]
     benchmark_nav_history: Optional[List[NavPoint]] = None  # 组合基准（可选）
-    # RFC-020: 用户在前端设置的总资金(元, 可变)。>0 时作为绝对操作金额的
-    # 定价基准(替代当前总市值), 让建议金额按“用户愿投入的总盘子”而非仅当前持仓。
-    total_capital: Optional[float] = None
+    # RFC-021: 用户在前端设置的「可用增量资金」(元, 可变, 即本次愿意投入的子弹)。
+    # 与现有持仓市值(current_mv) 彻底分开: 目标盘子 = Σcurrent_mv + available_capital。
+    # 旧 RFC-020 total_capital 被误当「组合总市值」作金额基数, 已废弃此语义。
+    total_capital: Optional[float] = None      # 兼容旧字段(现等价于 available_capital)
+    available_capital: Optional[float] = None  # 可用增量资金(元). 优先于 total_capital
+    available_capital_note: Optional[str] = None
     previous_report_id: Optional[int] = None
     previous_reports_json: Optional[List[dict]] = field(default_factory=list)  # 历史报告
 
