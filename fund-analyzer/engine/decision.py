@@ -15,14 +15,9 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
+from .action_mapping import canonical_decision_action
+
 logger = logging.getLogger(__name__)
-
-# 可接受动作别名
-_BUY_LIKE = {"buy", "add", "increase"}
-_REDUCE_LIKE = {"reduce", "sell"}
-_HOLD_LIKE = {"hold"}
-_WATCH_LIKE = {"watch"}
-
 
 # ============================================================
 #  1. 四视角确定性分数（LLM 不再打分）
@@ -261,13 +256,7 @@ def deterministic_action(regime: str, qi, view_scores: Optional[Dict[str, int]] 
 
 def _canonical(t: str) -> str:
     """把 sell/reduce → reduce；buy/add/increase → increase；watch/hold 保留。"""
-    if t in _REDUCE_LIKE:
-        return "reduce"
-    if t in _BUY_LIKE:
-        return "increase"
-    if t in _WATCH_LIKE:
-        return "watch"
-    return "hold"
+    return canonical_decision_action(t)
 
 
 def _base_confidence(regime: str, action_type: str) -> float:

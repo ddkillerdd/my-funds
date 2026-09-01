@@ -37,6 +37,7 @@ from engine.models import (
     ValueViewDiagnosis, TechnicalViewDiagnosis, DiagnosisItem,
     PortfolioGroundTruth, Completeness, Degradation,
 )
+from engine.action_mapping import normalize_action_name
 from engine.analyzer import Analyzer
 from engine.llm_client import LLMConfig
 
@@ -282,13 +283,16 @@ class AdvisorService:
         return set(rows)
 
     def _load_nav_history(self, fund_code: str, limit: int = 252) -> List[NavPoint]:
-        """加载单只基金的净值历史 (最多1年)"""
+        """加载单只基金最近的净值历史 (最多1年)。"""
         rows = self.db.execute(
             select(FundNavHistory.nav_date, FundNavHistory.unit_nav)
             .where(FundNavHistory.fund_code == fund_code)
-            .order_by(FundNavHistory.nav_date.asc())
+            # 先取最新记录，再恢复为时间升序供指标计算使用。
+            .order_by(FundNavHistory.nav_date.desc())
             .limit(limit)
         ).all()
+        # 真实数据库已在 SQL 层 LIMIT；切片兼容伪造 Session，确保窗口边界仍可靠。
+        rows = list(reversed(rows))[-limit:]
 
         return [
             NavPoint(
@@ -310,13 +314,13 @@ class AdvisorService:
         根治历史「actions 与 holdings_health 互相矛盾」的根因。
         """
         # fund_code -> nav at advice (from ground_truth / fund info)
-        nav_by_code: dict[str, Decimal] = {}
-        qi_map = getattr(report, "quant_map", None) or {}
-        for code, qi in qi_map.items():
-            if qi and getattr(qi, "nav_history", None):
-                navs = qi.nav_history
-                if navs:
-                    nav_by_code[code] = Decimal(str(navs[-1].value))
+        nav_by_code: dict[str, float] = {}
+        for fd in report.per_fund_diagnosis:
+            qi = getattr(fd, "ground_truth", None)
+            nav = getattr(qi, "current_nav", None)
+            if nav is not None:
+                # API JSON 只能接收基础数值，不能把 Decimal 直接交给 json.dumps。
+                nav_by_code[fd.fund_code] = float(nav)
 
         actions = []
         for fd in report.per_fund_diagnosis:
@@ -342,10 +346,12 @@ class AdvisorService:
             is_position = "target_weight" in a_dict
 
             # RFC-014 字段优先（PositionAction），旧 dict 回退
-            action = a_dict.get("action", a_dict.get("type", "hold")) or "hold"
+            action = normalize_action_name(
+                a_dict.get("action", a_dict.get("type", "hold")) or "hold"
+            )
             action_label = a_dict.get("action_label") or {
                 "buy": "买入", "increase": "加仓", "hold": "持有",
-                "reduce": "减仓", "sell": "卖出",
+                "reduce": "减仓", "decrease": "减仓", "sell": "卖出",
             }.get(action, action)
             change_pct = a_dict.get("change_pct")
             if not is_position:
@@ -356,7 +362,7 @@ class AdvisorService:
                 "fund_name": fd.fund_name,
                 "action": action,
                 "action_label": action_label,
-                "priority": "high" if action in ("sell", "buy") else "medium" if action in ("reduce", "increase") else "low",
+                "priority": "high" if action in ("sell", "buy") else "medium" if action in ("reduce", "decrease", "increase") else "low",
                 "reason": a_dict.get("reason", a_dict.get("reasoning", "") or ""),
                 # RFC-014: 目标仓位/变化 + 绝对金额(元)
                 "current_weight": a_dict.get("current_weight"),
@@ -435,7 +441,7 @@ class AdvisorService:
                                 if ds and ds.action else "hold"),
                 "suggestion_label": (ds.action.get("action_label")
                                       or {"buy": "买入", "increase": "加仓", "hold": "持有",
-                                          "reduce": "减仓", "sell": "卖出"}.get(
+                                          "reduce": "减仓", "decrease": "减仓", "sell": "卖出"}.get(
                                               ds.action.get("action", "hold"), "持有")
                                       if ds and ds.action else "持有"),
                 "target_weight_pct": ds.action.get("target_weight_pct") if ds and ds.action else None,
@@ -620,6 +626,10 @@ class AdvisorService:
             # 量化指标（前端展示用）
             qi = fd.ground_truth
             diag["quant"] = {
+                "nav": qi.current_nav,
+                "nav_date": qi.current_nav_date,
+                "nav_history_days": qi.nav_history_days,
+                "data_quality": qi.data_quality,
                 "trend_strength": qi.trend.trend_strength,
                 "sharpe": qi.efficiency.sharpe_ratio,
                 "sortino": qi.efficiency.sortino_ratio,

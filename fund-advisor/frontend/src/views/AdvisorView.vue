@@ -146,8 +146,13 @@
                   <div class="bt-num" :class="{ 'bt-good': (backtestStats.hit_rate||0) >= 0.5, 'bt-bad': (backtestStats.hit_rate||0) < 0.5 && backtestStats.hit_rate !== null }">
                     {{ backtestStats.hit_rate !== null ? Math.round(backtestStats.hit_rate*100) + '%' : '—' }}
                   </div>
-                  <div class="bt-label">整体命中率(相对沪深300)</div>
+                  <div class="bt-label">命中率(命中/方向分母)</div>
                 </div>
+              </div>
+              <div class="bt-subline">
+                方向覆盖率 {{ backtestStats.coverage !== null ? Math.round((backtestStats.coverage||0)*100) + '%' : '—' }}；
+                命中 {{ backtestStats.hits }} / 方向建议 {{ backtestStats.directional }}；
+                中性 {{ backtestStats.neutral }}；待验证 {{ backtestStats.pending }}
               </div>
               <div v-if="Object.keys(backtestStats.by_action||{}).length" class="by-action">
                 <el-tag
@@ -157,7 +162,8 @@
                   size="small"
                   style="margin: 2px 6px 2px 0"
                 >
-                  {{ k }}: {{ Math.round((v.hit_rate||0)*100) }}% ({{ v.hits }}/{{ v.total }})
+                  {{ k }}: {{ v.hit_rate !== null ? Math.round(v.hit_rate*100) + '%' : '—' }}
+                  ({{ v.hits }}/{{ v.directional }}，覆盖{{ Math.round((v.coverage||0)*100) }}%)
                 </el-tag>
               </div>
               <div v-if="backtestStats && report && report.backtest_feedback" class="bt-hint">

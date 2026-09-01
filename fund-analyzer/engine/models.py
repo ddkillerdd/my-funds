@@ -196,6 +196,8 @@ class QuantIndicators:
     is_money_fund: bool
     nav_history_days: int
     data_quality: str = "unknown"                     # good/adequate/sparse/insufficient
+    current_nav: Optional[float] = None                # 建议时最新单位净值
+    current_nav_date: Optional[str] = None             # 建议时最新净值日期
 
     trend: TrendIndicators = field(default_factory=TrendIndicators)
     macd: MacdIndicators = field(default_factory=MacdIndicators)

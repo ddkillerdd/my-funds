@@ -46,6 +46,7 @@ class BacktestStats(BaseModel):
     miss: int = 0
     neutral: int = 0
     hit_rate: Optional[Decimal] = None
+    coverage: Decimal = Decimal("0")
     by_action: dict = {}
     factor_rates: list[FactorHitRateOut] = []
     recent_advice: list[AdviceRecord] = []

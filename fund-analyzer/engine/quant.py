@@ -642,6 +642,8 @@ def compute_all(holding: FundHolding) -> QuantIndicators:
         is_money_fund=holding.is_money_fund,
         nav_history_days=n,
         data_quality=quality,
+        current_nav=float(nav_history[-1].nav) if nav_history else None,
+        current_nav_date=nav_history[-1].date if nav_history else None,
     )
 
     # Compute each category

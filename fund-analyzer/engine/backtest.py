@@ -1,13 +1,13 @@
 """Pure backtest evaluation logic for fund advice (RFC-012).
 
 Independent, side-effect-free: given the fund's and benchmark's NAV at advice time
-and at validation time, decide whether the directional advice (REDUCE / INCREASE)
+and at validation time, decide whether the directional advice (SELL / BUY family)
 was a hit / miss / neutral. HOLD / WATCH are returned as neutral (no directional bet).
 
 Design:
   - Relative return vs benchmark beats absolute move (avoids "down with the whole
     market looks correct" illusion). This is what "create excess value" means.
-  - Only directional actions (REDUCE / INCREASE) count toward hit-rate.
+  - Only directional actions (SELL / REDUCE / DECREASE / BUY / INCREASE) count toward hit-rate.
   - Comparison uses close NAV series, annualized-neutral over the window.
 
 All functions are pure; persistence/hooks live in the integration layer.
@@ -20,9 +20,15 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
+from .action_mapping import action_direction, normalize_action_name
 
-# Actions that carry a directional bet and thus participate in hit-rate.
-DIRECTIONAL_ACTIONS = ("reduce", "increase")
+
+# 负向动作集合，表示建议降低或退出该基金仓位。
+REDUCE_ACTIONS = ("sell", "reduce", "decrease")
+# 正向动作集合，表示建议买入或增加该基金仓位。
+INCREASE_ACTIONS = ("buy", "increase")
+# 所有带方向的动作都会进入方向命中率分母。
+DIRECTIONAL_ACTIONS = REDUCE_ACTIONS + INCREASE_ACTIONS
 # Hedge threshold: relative return within +/- this fraction is treated as neutral
 # (not enough signal to call it a clear hit or miss).
 NEUTRAL_BAND = Decimal("0.005")  # 0.5%
@@ -59,7 +65,7 @@ def validate_advice(
     """Judge one advice against observed NAV movement (RFC-012 §5.1).
 
     Args:
-        action: 'reduce' | 'increase' | 'hold' | 'watch'
+        action: 'sell' | 'reduce' | 'decrease' | 'buy' | 'increase' | 'hold' | 'watch'
         nav_before / nav_after: fund unit NAV at advice time / validation time
         benchmark_before / benchmark_after: benchmark (e.g. 沪深300) index NAV
         neutral_band: relative-return band that maps to neutral
@@ -67,10 +73,10 @@ def validate_advice(
     Returns:
         Verdict with normalized verdict in {hit, miss, neutral}.
     """
-    action = (action or "").strip().lower()
+    action = normalize_action_name(action)
 
     # Non-directional or missing data -> neutral (no bet, nothing to judge).
-    if action not in DIRECTIONAL_ACTIONS:
+    if action_direction(action) not in ("positive", "negative"):
         return Verdict("neutral", None, None, None, f"action '{action}' is not directional")
 
     fund_chg = _pct(nav_before, nav_after)
@@ -88,10 +94,10 @@ def validate_advice(
     # Direction logic:
     #   REDUCE  : bet that fund underperforms -> relative < 0 is a hit
     #   INCREASE: bet that fund outperforms   -> relative > 0 is a hit
-    if action == "reduce":
+    if action in REDUCE_ACTIONS:
         hit_when = rel < -neutral_band
         miss_when = rel > neutral_band
-    else:  # increase
+    else:  # buy / increase
         hit_when = rel > neutral_band
         miss_when = rel < -neutral_band
 

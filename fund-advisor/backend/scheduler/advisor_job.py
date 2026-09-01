@@ -88,8 +88,9 @@ class AdvisorJob:
                 ]
                 navs = {}
                 for fd in (result.get("per_fund_diagnosis") or []):
-                    q = fd.get("quant_indicator", {})
-                    if fd.get("fund_code") and q.get("nav"):
+                    # v3 使用 quant，兼容历史报告中的 quant_indicator。
+                    q = fd.get("quant") or fd.get("quant_indicator") or {}
+                    if fd.get("fund_code") and q.get("nav") is not None:
                         navs[fd["fund_code"]] = q["nav"]
                 bsvc.record_advice(
                     report_id=report.id,

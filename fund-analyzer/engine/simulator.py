@@ -53,6 +53,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -66,9 +67,11 @@ from engine.models import (
 from engine.quant import compute_all
 from engine.decision import (
     build_position_action,
+    _action_from_weights,
     _f,
 )
 from engine.decision import BASE_WEIGHT, DD_HARD_STOP, DD_REDUCE_LO, VOL_HIGH_CAP
+from engine.allocation import fit_target_weights_to_budget
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +179,35 @@ def _build_last_known_value(histories: Dict[str, List[NavPoint]],
                 d2n[d] = last
         out[code] = d2n
     return out
+
+
+# 解析并校验策略目标权重，保留现金并在没有新信号时维持当前仓位。
+def _resolve_target_weights(
+    actions: Dict[str, dict],
+    codes: List[str],
+    current_weights: Dict[str, float],
+    reject_overweight: bool = True,
+) -> Dict[str, float]:
+    """把策略动作转换为合法组合目标权重。"""
+    resolved: Dict[str, float] = {}
+    for code in codes:
+        action = actions.get(code)
+        if isinstance(action, dict) and action.get("target_weight") is not None:
+            raw_weight = action.get("target_weight")
+        else:
+            raw_weight = current_weights.get(code, 0.0)
+        try:
+            weight = float(raw_weight or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"基金 {code} 的目标权重不是有效数字: {raw_weight!r}") from exc
+        if not math.isfinite(weight) or weight < -1e-9 or weight > 1.0 + 1e-9:
+            raise ValueError(f"基金 {code} 的目标权重必须在 0 到 1 之间: {weight!r}")
+        resolved[code] = min(1.0, max(0.0, weight))
+    weight_sum = sum(resolved.values())
+    if reject_overweight and weight_sum > 1.0 + 1e-9:
+        # 超配属于策略输出错误，不能在模拟器内静默归一化改变策略含义。
+        raise ValueError(f"目标权重合计超过100%: {weight_sum:.6f}")
+    return resolved
 
 
 # =====================================================================
@@ -311,17 +343,41 @@ def _simulate_window(codes, histories, window_days, initial_amount,
                 target_vol=target_vol, friction_band_pp=friction_band_pp,
             )
 
-        # ---- 目标权重 -> 归一化 -> 执行 ----
-        target_weights = {
-            c: actions[c]["target_weight"] if c in actions
-               and actions[c].get("target_weight") is not None else 0.0
+        # ---- 目标权重 -> 保留现金 -> 执行 ----
+        current_weights = {
+            c: (shares[c] * nav_of(c, d) / total_now) if total_now > 0 else 0.0
             for c in codes
         }
-        tw_sum = sum(target_weights.values())
-        if tw_sum > 1e-9:
-            target_weights = {c: v / tw_sum for c, v in target_weights.items()}
-        else:
-            target_weights = {c: 0.0 for c in codes}
+        target_weights = _resolve_target_weights(
+            actions,
+            codes,
+            current_weights,
+            # 默认单基金信号还需经过显式的组合预算协调；注入策略必须自行给出合法权重。
+            reject_overweight=strategy is not None,
+        )
+        if strategy is None:
+            # 默认单基金信号先生成，再由组合层显式协调到 100% 预算内。
+            target_weights = fit_target_weights_to_budget(
+                current_weight=current_weights,
+                target_weight=target_weights,
+                codes=codes,
+            )
+            for code, target_weight in target_weights.items():
+                action = actions.get(code)
+                if not isinstance(action, dict):
+                    continue
+                action["target_weight"] = round(target_weight, 4)
+                action["target_weight_pct"] = round(target_weight * 100, 1)
+                action["change_weight_pp"] = round(
+                    (target_weight - current_weights[code]) * 100, 2
+                )
+                action["action"] = _action_from_weights(
+                    target_weight, current_weights[code]
+                )
+                action["action_label"] = {
+                    "buy": "买入", "increase": "加仓", "hold": "持有",
+                    "reduce": "减仓", "sell": "卖出",
+                }.get(action["action"], "持有")
 
         cash = (executor or _default_executor)(shares, target_weights, lkv, d, total_now)
 

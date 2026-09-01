@@ -24,6 +24,7 @@ from backend.engine_bridge import ensure_engine_path
 # 确保可以 import engine (fund-analyzer) 纯逻辑模块
 ensure_engine_path()
 
+from engine.action_mapping import normalize_action_name
 from backend.models.advice_snapshot import AdviceSnapshot
 from backend.models.factor_hit_rate import FactorHitRate
 from backend.schemas.backtest import (
@@ -66,7 +67,7 @@ class BacktestService:
         count = 0
         for a in actions or []:
             code = (a.get("fund_code") or "").strip()
-            action = (a.get("action") or "").strip().lower()
+            action = normalize_action_name(a.get("action"))
             if not code or not action:
                 continue
             row = AdviceSnapshot(
@@ -196,7 +197,7 @@ class BacktestService:
 
         buckets: dict[tuple[str, str], list[str]] = {}
         for r in validated_rows:
-            key = (r.action, "action")
+            key = (normalize_action_name(r.action), "action")
             buckets.setdefault(key, []).append(r.verdict or "neutral")
             # overall bucket
             buckets.setdefault(("all", "overall"), []).append(r.verdict or "neutral")
@@ -278,14 +279,21 @@ class BacktestService:
 
         by_action: dict[str, dict] = {}
         for r in validated_rows:
-            d = by_action.setdefault(r.action, {"total": 0, "hits": 0, "miss": 0})
+            action = normalize_action_name(r.action)
+            d = by_action.setdefault(action, {"total": 0, "hits": 0, "miss": 0})
             d["total"] += 1
             if r.verdict == "hit":
                 d["hits"] += 1
             elif r.verdict == "miss":
                 d["miss"] += 1
         for d in by_action.values():
-            d["hit_rate"] = round(d["hits"] / d["total"], 4) if d["total"] else None
+            d["directional"] = d["hits"] + d["miss"]
+            d["neutral"] = d["total"] - d["directional"]
+            d["coverage"] = round(d["directional"] / d["total"], 4) if d["total"] else None
+            d["hit_rate"] = (
+                round(d["hits"] / d["directional"], 4)
+                if d["directional"] else None
+            )
 
         factors = self.db.execute(
             select(FactorHitRate).order_by(FactorHitRate.factor_key)
@@ -306,6 +314,7 @@ class BacktestService:
             miss=miss,
             neutral=neutral,
             hit_rate=hit_rate,
+            coverage=round(directional / len(validated_rows), 4) if validated_rows else 0.0,
             by_action=by_action,
             factor_rates=factor_rates,
             recent_advice=recent_records,

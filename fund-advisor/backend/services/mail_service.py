@@ -270,6 +270,7 @@ class MailService:
             "buy": "买入",
             "increase": "加仓",
             "reduce": "减仓",
+            "decrease": "减仓",
             "sell": "卖出",
             "hold": "持有",
             "watch": "关注",
@@ -309,7 +310,7 @@ class MailService:
                     amount_str = "-{:.2f}".format(abs(amount))
                 else:
                     amount_str = "0.00"
-            amount_color = "#389e0d" if a.get("action") in ("buy", "add", "increase") else ("#d4380d" if a.get("action") in ("reduce", "sell") else "#606266")
+            amount_color = "#389e0d" if a.get("action") in ("buy", "add", "increase") else ("#d4380d" if a.get("action") in ("reduce", "decrease", "sell") else "#606266")
             if priority == "high":
                 reason += " [高优]"
             cur = a.get("current_amount")

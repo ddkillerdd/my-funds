@@ -17,6 +17,8 @@ from typing import Optional, Dict, Any, List
 
 import httpx
 
+from .action_mapping import normalize_action_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -592,6 +594,10 @@ def normalize_action(action) -> Dict[str, Any]:
         act["type"] = act["action"]
 
     act.setdefault("type", "hold")
+    # 统一历史别名，保证 type/action 在后续签名校验中方向一致。
+    act["type"] = normalize_action_name(act["type"])
+    if "action" in act:
+        act["action"] = normalize_action_name(act["action"])
     act.setdefault("confidence", 0.5)
     act.setdefault("reasoning", "")
     if "change_pct" not in act or act["change_pct"] is None:
@@ -608,9 +614,9 @@ def normalize_action(action) -> Dict[str, Any]:
     # Sanity: change_pct sign must match action type
     t = act["type"]
     cp = float(act["change_pct"] or 0.0)
-    if t in ("buy", "add") and cp < 0:
+    if t in ("buy", "increase") and cp < 0:
         act["change_pct"] = abs(cp)
-    elif t in ("reduce", "sell") and cp > 0:
+    elif t in ("reduce", "sell", "decrease") and cp > 0:
         act["change_pct"] = -abs(cp)
     elif t in ("hold", "watch"):
         act["change_pct"] = 0.0

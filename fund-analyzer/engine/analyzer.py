@@ -756,7 +756,10 @@ class Analyzer:
             - action_amount  = target_amount - current_amount (>0 加 / <0 减)
             增量不足时按风险调整后的 ideal_amount 比例压缩, 避免超额分配。
         """
-        from engine.allocation import allocate_incremental_capital
+        from engine.allocation import (
+            allocate_incremental_capital,
+            fit_target_weights_to_budget,
+        )
 
         avail = portfolio.available_capital
         if avail is None:
@@ -779,13 +782,25 @@ class Analyzer:
             tw = act.get("target_weight")
             if tw is not None:
                 target_weight[fd.fund_code] = float(tw)
-            elif fd.fund_code not in target_weight:
-                target_weight[fd.fund_code] = float(act.get("current_weight", 0) or 0)
+            # 缺失 target_weight 不写入 0，由分配器按 current_weight 维持现有金额。
+
+        # 没有明确目标的基金维持现有绝对金额；只有显式 target_weight=0 才表示清仓。
+        allocation_scale = sum(current_mv.values()) + available_capital
+        current_weight = {
+            code: (value / allocation_scale if allocation_scale > 0 else 0.0)
+            for code, value in current_mv.items()
+        }
+        target_weight = fit_target_weights_to_budget(
+            current_weight=current_weight,
+            target_weight=target_weight,
+            codes=list(current_mv),
+        )
 
         alloc = allocate_incremental_capital(
             current_mv=current_mv,
             target_weight=target_weight,
             available_capital=available_capital,
+            current_weight=current_weight,
         )
 
         # 把分配结果写回每个诊断的 action (仅当该基金有分配条目)
@@ -801,6 +816,8 @@ class Analyzer:
             act["action_amount"] = pf["action_amount"]
             act["current_amount"] = pf["current_mv"]
             act["total_scale"] = alloc["total_scale"]
+            act["target_weight"] = pf["target_weight"]
+            act["target_weight_pct"] = round(pf["target_weight"] * 100, 1)
             act["allocated_capital"] = alloc["allocated_capital"]
             # 操作金额语义: >0 加仓 / <0 减仓
             if pf["action_amount"] and pf["action_amount"] > 0 and act.get("action") in ("hold", "reduce"):
