@@ -1,5 +1,7 @@
 """Application settings loaded from .env."""
 
+from __future__ import annotations
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +26,10 @@ class Settings(BaseSettings):
     # NAV Fetch
     NAV_FETCH_CONCURRENCY: int = 5
     NAV_FETCH_INTERVAL: float = 0.5
+
+    # Background Jobs
+    ENABLE_SCHEDULER: bool = True
+    ENABLE_STARTUP_NAV_CHECK: bool = True
 
     # NewAPI (LLM Gateway)
     NEWAPI_BASE_URL: str = ""

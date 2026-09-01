@@ -13,15 +13,16 @@ DB, cron and report hooks:
 from __future__ import annotations
 
 import logging
-import sys
 from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
+from backend.engine_bridge import ensure_engine_path
+
 # 确保可以 import engine (fund-analyzer) 纯逻辑模块
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
+ensure_engine_path()
 
 from backend.models.advice_snapshot import AdviceSnapshot
 from backend.models.factor_hit_rate import FactorHitRate

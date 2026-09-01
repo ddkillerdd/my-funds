@@ -13,7 +13,6 @@
 import json
 import logging
 import re
-import sys
 import time
 from datetime import date, datetime
 from decimal import Decimal
@@ -23,12 +22,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from backend.config import get_settings
+from backend.engine_bridge import ensure_engine_path
 from backend.models.fund import Fund
 from backend.models.holding import FundHolding
 from backend.models.nav_history import FundNavHistory
 
 # 确保可以 import fund_analyzer
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
+ensure_engine_path()
 
 from engine.models import (
     NavPoint, FundHolding as FAHolding, PortfolioInput, AnalysisReport,

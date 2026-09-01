@@ -12,19 +12,18 @@
 """
 
 import logging
-import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.engine_bridge import ensure_engine_path
+
 logger = logging.getLogger(__name__)
 
 # ---- 注入 fund-analyzer 引擎(与现有 backend/services 一致的桥接方式) ----
-_ENGINE_PATH = "/root/.openclaw/workspace/fund-analyzer"
-if _ENGINE_PATH not in sys.path:
-    sys.path.insert(0, _ENGINE_PATH)
+ensure_engine_path()
 
 from engine.simulator import Simulator  # noqa: E402
 from engine.models import NavPoint  # noqa: E402

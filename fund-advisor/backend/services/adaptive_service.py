@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import threading
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -38,10 +37,10 @@ from typing import Dict, List, Optional
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
 
+from backend.engine_bridge import ensure_engine_path
+
 # ---- 注入 fund-analyzer 引擎(与 backend/services 一致的桥接方式) ----
-_ENGINE_PATH = "/root/.openclaw/workspace/fund-analyzer"
-if _ENGINE_PATH not in sys.path:
-    sys.path.insert(0, _ENGINE_PATH)
+ensure_engine_path()
 
 from engine.strategy_config import (  # noqa: E402
     FundStrategyConfig, class_default, classify_fund,

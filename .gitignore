@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 venv/
 env/
+.runtime/
+.tools/
 *.so
 
 # ─── 环境/密钥（绝不提交）───

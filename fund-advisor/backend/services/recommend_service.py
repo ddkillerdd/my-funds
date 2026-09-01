@@ -15,9 +15,10 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
+from backend.engine_bridge import ensure_engine_path
+
 # 确保可以 import fund_analyzer（与 advisor_service 相同路径注入）
-import sys
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
+ensure_engine_path()
 
 from engine.models import QuantIndicators  # noqa: E402
 from engine.quant import compute_all  # noqa: E402

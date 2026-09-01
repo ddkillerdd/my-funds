@@ -26,7 +26,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: startup and shutdown events."""
+    """管理应用启动和关闭，并允许本地环境禁用后台任务。"""
     # Startup
     logger.info("Creating database tables...")
     Base.metadata.create_all(bind=engine)
@@ -34,19 +34,23 @@ async def lifespan(app: FastAPI):
     # Ensure upload directory exists
     Path("data/uploads").mkdir(parents=True, exist_ok=True)
 
-    # Setup scheduler
-    sched = setup_scheduler()
-    sched.start()
-    logger.info("Scheduler started")
+    # 本地开发可关闭定时器，避免误调用外部数据源或邮件服务。
+    sched = None
+    if settings.ENABLE_SCHEDULER:
+        sched = setup_scheduler()
+        sched.start()
+        logger.info("Scheduler started")
 
-    # Startup backfill (run in background)
-    asyncio.create_task(job_startup_nav_check())
+    # 启动回补单独控制，便于本地和测试环境完全隔离外部请求。
+    if settings.ENABLE_STARTUP_NAV_CHECK:
+        asyncio.create_task(job_startup_nav_check())
 
     yield
 
     # Shutdown
-    sched.shutdown()
-    logger.info("Scheduler stopped")
+    if sched is not None:
+        sched.shutdown()
+        logger.info("Scheduler stopped")
 
 
 app = FastAPI(

@@ -1,0 +1,31 @@
+name: my-funds-local
+
+services:
+  mysql:
+    # 固定主版本和补丁版本，避免本地数据库行为随 latest 漂移。
+    image: mysql:8.0.43
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: local-root-only
+      MYSQL_DATABASE: fund_advisor_test
+      MYSQL_USER: fund_test
+      MYSQL_PASSWORD: local-test-only
+      TZ: Asia/Shanghai
+    ports:
+      # 只绑定本机回环地址，不向局域网或公网开放。
+      - "127.0.0.1:3307:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    volumes:
+      # 该卷只保存合成测试数据，可按文档命令显式清理。
+      - fund_advisor_local_mysql:/var/lib/mysql
+
+volumes:
+  fund_advisor_local_mysql:

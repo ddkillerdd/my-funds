@@ -4,7 +4,8 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
-    port: 3000,
+    // 本地开发端口与服务器 systemd 服务保持一致。
+    port: 8201,
     proxy: {
       '/api': {
         target: 'http://localhost:8200',

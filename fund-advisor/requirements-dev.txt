@@ -1,0 +1,9 @@
+# 后端本地开发依赖：生产依赖 + 分析引擎依赖 + 测试工具。
+-r requirements.txt
+-r ../fund-analyzer/requirements.txt
+
+# 与服务器当前测试工具版本保持一致，支持 Python 3.9。
+pytest==8.4.2
+
+# Windows + Python 3.9 使用有预编译轮子的兼容版本，避免本地依赖 C++ 编译器。
+greenlet==3.1.1; python_version == "3.9" and sys_platform == "win32"
