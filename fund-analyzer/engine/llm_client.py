@@ -117,9 +117,28 @@ class LLMClient:
                 self.config.fallback_timeout if is_fallback else self.config.default_timeout
             )
 
-            for attempt in range(self.config.max_retries_per_model + 1):
+            # json_mode 更容易受中转服务影响，至少允许两次重试。
+            max_retries = (
+                max(self.config.max_retries_per_model, 2)
+                if json_mode
+                else self.config.max_retries_per_model
+            )
+
+            for attempt in range(max_retries + 1):
+                effective_prompt = prompt
+                if json_mode and attempt > 0:
+                    strict = "\n\n[硬性要求] 绝对禁止输出散文/思考/讨论。只输出一个合法的 JSON 对象, 不含任何前后缀或 markdown 代码块。"
+                    effective_prompt = prompt + strict * attempt
                 try:
-                    result = self._call_once(model, prompt, temperature, max_tokens, t, json_mode)
+                    result = self._call_once(model, effective_prompt, temperature, max_tokens, t, json_mode)
+                    # 中转服务可能忽略 response_format，解析不到 JSON 时触发重试。
+                    if json_mode:
+                        parsed = parse_json_response(result)
+                        if parsed is None:
+                            raise ValueError(
+                                f"json_mode=True but response contains no JSON object "
+                                f"(first 120 chars: {result[:120]!r})"
+                            )
                     if is_fallback:
                         self._fallback_count += 1
                     self._models_used[step_label or f"call_{self._call_count}"] = model

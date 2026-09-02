@@ -104,9 +104,11 @@ class AdvisorService:
                 "risk": "deepseek-v4-flash",
                 "value": "deepseek-v4-flash",
                 "tech": "deepseek-v4-flash",
-                "debate": "deepseek-v4-flash",
+                # ds-flash 在长 prompt+复杂 JSON schema 任务下可能输出散文。
+                # debate/cross_val 任务改用稳定输出 JSON 的模型。
+                "debate": "nvidia/nvidia-nemotron-nano-9b-v2",
                 "portfolio": "deepseek-v4-flash",
-                "cross_val": "deepseek-v4-flash",
+                "cross_val": "nvidia/nvidia-nemotron-nano-9b-v2",
             },
         )
         analyzer = Analyzer(config)

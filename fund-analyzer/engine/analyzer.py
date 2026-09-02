@@ -1039,10 +1039,26 @@ class Analyzer:
         try:
             prompt = build_cross_validation_prompt(report_text, all_facts)
             # Cross-validation uses nano-9b (checklist-like, no deep reasoning needed)
-            crossval_model = self.llm.config.model_assignments.get("cross_val", "nvidia/nvidia-nemotron-nano-9b-v2")
-            raw = self.llm.call(prompt, temperature=0.0, max_tokens=3072, json_mode=True,
-                                 step_label="cross_val", model=crossval_model)
-            data = parse_json_response(raw)
+            # 线上中转可能丢失 response_format，优先 nano-9b，失败时再降级。
+            crossval_models = [
+                self.llm.config.model_assignments.get("cross_val", "nvidia/nvidia-nemotron-nano-9b-v2"),
+                "deepseek-v4-flash",
+            ]
+            raw = None
+            data = None
+            last_err: Optional[Exception] = None
+            for m in crossval_models:
+                try:
+                    raw = self.llm.call(prompt, temperature=0.0, max_tokens=3072, json_mode=True,
+                                        step_label="cross_val", model=m)
+                    data = parse_json_response(raw)
+                    if data:
+                        break
+                except Exception as e1:  # noqa: BLE001
+                    last_err = e1
+                    logger.warning(f"Cross-validation model {m} failed: {e1}")
+            if not data:
+                raise ValueError(f"All cross-val models failed: {last_err}")
 
             if data:
                 return GlobalConfidence(
