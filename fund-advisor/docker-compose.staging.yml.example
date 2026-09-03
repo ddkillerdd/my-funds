@@ -1,0 +1,67 @@
+name: my-funds-staging
+
+services:
+  mysql:
+    image: mysql:8.0.43
+    environment:
+      MYSQL_ROOT_PASSWORD: ${STAGING_DB_ROOT_PASSWORD:?请在服务器运行时注入 staging 根密码}
+      MYSQL_DATABASE: fund_advisor_staging
+      MYSQL_USER: fund_staging
+      MYSQL_PASSWORD: ${STAGING_DB_PASSWORD:?请在服务器运行时注入 staging 应用密码}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    volumes:
+      - my_funds_staging_mysql:/var/lib/mysql
+    restart: "no"
+
+  backend:
+    build:
+      context: ..
+      dockerfile: fund-advisor/Dockerfile
+    env_file:
+      - staging.env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: fund_staging
+      DB_PASSWORD: ${STAGING_DB_PASSWORD:?请在服务器运行时注入 staging 应用密码}
+      DB_NAME: fund_advisor_staging
+      APP_ENV: staging
+      APP_PORT: "8200"
+      ENABLE_SCHEDULER: "false"
+      ENABLE_STARTUP_NAV_CHECK: "false"
+      NEWAPI_BASE_URL: ""
+      NEWAPI_API_KEY: ""
+      SMTP_HOST: ""
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_TO: ""
+    ports:
+      - "127.0.0.1:${STAGING_BACKEND_PORT:-18200}:8200"
+    volumes:
+      - ./data-staging:/app/fund-advisor/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${STAGING_FRONTEND_PORT:-18201}:80"
+    depends_on:
+      - backend
+    restart: "no"
+
+volumes:
+  my_funds_staging_mysql:

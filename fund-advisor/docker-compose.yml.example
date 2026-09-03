@@ -1,14 +1,14 @@
 services:
   backend:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: fund-advisor/Dockerfile
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ./data:/app/fund-advisor/data
     restart: unless-stopped
 
   frontend:
@@ -16,7 +16,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "8201:80"
+      - "127.0.0.1:8201:80"
     depends_on:
       - backend
     restart: unless-stopped
