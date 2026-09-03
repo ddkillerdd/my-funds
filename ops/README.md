@@ -44,9 +44,9 @@ Copy-Item -LiteralPath 'E:\myfund11111\ops\.env.example' -Destination 'E:\myfund
 ## 当前服务器接入状态
 
 - SSH 密钥已绑定并通过主机指纹校验。
-- 服务器为 Rocky Linux + systemd，后端和前端服务均已运行，健康接口与首页已验证。
+- 服务器为 Rocky Linux + systemd。前端 unit 正常运行；backend unit 的失败自动重试已停止，旧健康 uvicorn 继续由 `tat_agent.service` 控制，后端健康接口与前端首页均已验证。
 - MySQL 为服务器主机进程，NewAPI 的 MySQL 容器不是 my-funds 业务数据库。
-- 服务器工作区原有 3 个未提交热修已保存到服务器受控备份目录，部署前必须先纳入本地开发基线。
+- 服务器工作区原有 3 个未提交热修已经审查并进入 GitHub 提交 `5f8bc18`；生产目录仍保留这些差异，部署时禁止覆盖式拉取。
 - 服务器应用 .env 权限已收紧为仅属主可读写。
 
 ## 发布门禁
@@ -57,8 +57,11 @@ Copy-Item -LiteralPath 'E:\myfund11111\ops\.env.example' -Destination 'E:\myfund
 2. 服务器工作区干净，或所有线上热修已经审查并进入目标提交。
 3. 服务器端数据库备份工具已确认可用，备份留在服务器，不下载到本地。
 4. 发布后完成后端健康检查、前端首页检查和关键 API 检查。
+5. OpenClaw 和其他执行端没有并发写入，自动任务与 systemd 重启策略已经记录暂停和恢复方式。
 
 当前服务器尚未发现可直接调用的 mysqldump 客户端，因此数据库备份自动化仍是发布前门禁，不能被跳过。
+
+Sol 与 Luna 的长期后台调度规则见 `E:\myfund11111\docs\operations\CODEX_LUNA_ORCHESTRATION.md`；Codex、Luna 与 OpenClaw 的任务认领、分支、热修回收和发布窗口规则见 `E:\myfund11111\docs\operations\OPENCLAW_CODEX_COLLABORATION.md`。
 
 ## 后续扩展
 
