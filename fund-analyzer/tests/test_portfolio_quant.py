@@ -1,8 +1,5 @@
 """test_portfolio_quant.py — Unit tests for portfolio-level quant"""
 
-import sys
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
-
 import pytest
 from engine.portfolio_quant import correlation_matrix, concentration, efficient_frontier
 from engine.models import FundHolding, NavPoint

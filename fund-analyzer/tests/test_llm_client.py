@@ -1,8 +1,5 @@
 """test_llm_client.py — Unit tests for LLM client and fallbacks (no actual API calls)"""
 
-import sys
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
-
 import pytest
 import json
 from engine.llm_client import (

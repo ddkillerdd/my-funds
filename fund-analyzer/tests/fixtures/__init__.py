@@ -5,9 +5,6 @@ import random
 import math
 from typing import List
 
-import sys
-sys.path.insert(0, '/root/.openclaw/workspace/fund-analyzer')
-
 from engine.models import NavPoint, FundHolding
 
 

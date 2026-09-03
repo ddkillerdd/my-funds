@@ -1,8 +1,5 @@
 """test_prompts.py — Unit tests for prompt templates"""
 
-import sys
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
-
 import pytest
 from engine.prompts import (
     build_fact_card,

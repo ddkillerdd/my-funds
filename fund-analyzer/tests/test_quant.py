@@ -1,8 +1,5 @@
 """test_quant.py — Unit tests for quantitative indicators"""
 
-import sys
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
-
 import pytest
 from engine.quant import compute_all, compute_trend, compute_macd, compute_risk, compute_returns
 from engine.models import NavPoint, FundHolding

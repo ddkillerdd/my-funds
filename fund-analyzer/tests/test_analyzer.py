@@ -1,8 +1,5 @@
 """test_analyzer.py — Integration test for the full analysis pipeline (no LLM calls)"""
 
-import sys
-sys.path.insert(0, "/root/.openclaw/workspace/fund-analyzer")
-
 import pytest
 import json
 from engine.models import (
