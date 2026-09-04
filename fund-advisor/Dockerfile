@@ -2,12 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 构建上下文必须是 monorepo 根目录，以便同时安装应用层和分析引擎依赖。
-COPY fund-advisor/requirements.txt /app/fund-advisor/requirements.txt
-COPY fund-analyzer/requirements.txt /app/fund-analyzer/requirements.txt
-RUN pip install --no-cache-dir \
-    -r /app/fund-advisor/requirements.txt \
-    -r /app/fund-analyzer/requirements.txt
+# 构建上下文必须是 monorepo 根目录；Linux 哈希锁固定运行时传递依赖。
+COPY fund-advisor/requirements-linux.lock /app/fund-advisor/requirements-linux.lock
+RUN python -m pip install --no-cache-dir --require-hashes \
+    -r /app/fund-advisor/requirements-linux.lock
 
 COPY fund-advisor/backend/ /app/fund-advisor/backend/
 COPY fund-advisor/alembic/ /app/fund-advisor/alembic/
