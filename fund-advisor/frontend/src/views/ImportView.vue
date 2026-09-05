@@ -3,7 +3,7 @@
     <h2 class="page-title">数据导入</h2>
 
     <!-- Quick Import (RFC-002) -->
-    <el-card shadow="hover" class="quick-import-card">
+    <el-card id="quick" shadow="hover" class="quick-import-card">
       <template #header>
         <span>📝 快捷导入 — 只需基金代码 + 持有金额</span>
       </template>
@@ -25,6 +25,13 @@
         >
           <template #prefix>¥</template>
         </el-input>
+        <el-select v-model="quickPlatform" placeholder="平台" style="width: 130px">
+          <el-option label="支付宝" value="支付宝" />
+          <el-option label="天天基金" value="天天基金" />
+          <el-option label="银行" value="银行" />
+          <el-option label="其他" value="其他" />
+        </el-select>
+        <el-date-picker v-model="quickShareDate" type="date" value-format="YYYY-MM-DD" placeholder="业务日期" style="width: 150px" />
         <el-button type="primary" :icon="Plus" @click="addQuickRecord">添加</el-button>
       </div>
 
@@ -35,7 +42,8 @@
           <el-table-column prop="fund_name" label="基金名称" min-width="200" show-overflow-tooltip>
             <template #default="{ row }">
               <span v-if="row._resolved_name" class="text-resolved">{{ row._resolved_name }}</span>
-              <span v-else class="text-pending">待查询</span>
+              <span v-else-if="row._status === 'loading'" class="text-pending">正在获取</span>
+              <span v-else class="text-pending">待预览</span>
             </template>
           </el-table-column>
           <el-table-column label="持有金额" width="120" align="right">
@@ -51,17 +59,25 @@
           </el-table-column>
           <el-table-column label="平台" width="120">
             <template #default="{ row }">
-              <el-select v-model="row.platform" size="small" style="width: 100px">
-                <el-option label="支付宝" value="支付宝" />
-                <el-option label="天天基金" value="天天基金" />
-                <el-option label="银行" value="银行" />
-                <el-option label="其他" value="其他" />
-              </el-select>
+              <span>{{ row.platform }}</span>
             </template>
+          </el-table-column>
+          <el-table-column label="最新净值" width="110" align="right">
+            <template #default="{ row }">{{ row.latest_nav ? Number(row.latest_nav).toFixed(4) : '--' }}</template>
+          </el-table-column>
+          <el-table-column label="净值日期" width="120">
+            <template #default="{ row }">{{ row.latest_nav_date || '--' }}</template>
           </el-table-column>
           <el-table-column label="操作" width="60" align="center">
             <template #default="{ $index }">
               <el-button type="danger" :icon="Delete" size="small" link @click="quickRecords.splice($index, 1)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" min-width="160">
+            <template #default="{ row }">
+              <el-tag v-if="row._error" type="danger" size="small">{{ row._error }}</el-tag>
+              <el-tag v-else-if="row._status === 'ready'" type="success" size="small">已获取</el-tag>
+              <el-tag v-else type="info" size="small">{{ row._status === 'loading' ? '正在获取' : '待预览' }}</el-tag>
             </template>
           </el-table-column>
         </el-table>
@@ -70,7 +86,8 @@
           <el-button
             type="primary"
             :icon="Upload"
-            :loading="quickImporting"
+            :loading="hasLoadingPreview || quickImporting"
+            :disabled="hasLoadingPreview || quickImporting"
             @click="handleQuickImport"
           >
             批量导入 ({{ quickRecords.length }} 条)
@@ -93,7 +110,7 @@
         action=""
         :auto-upload="false"
         :limit="1"
-        accept=".xlsx,.xls,.zip"
+        accept=".xlsx,.zip"
         :on-change="handleFileChange"
         :on-exceed="handleExceed"
       >
@@ -103,7 +120,7 @@
         </div>
         <template #tip>
           <div class="el-upload__tip">
-            支持 .xlsx、.xls 或 .zip 格式（ZIP可包含多个Excel文件）。文件来源：基金E账户App → 投资者公募基金持有信息
+            支持 .xlsx 或 .zip 格式（ZIP可包含多个 Excel 文件），单文件不超过 20 MiB。文件来源：基金E账户App → 投资者公募基金持有信息
           </div>
         </template>
       </el-upload>
@@ -119,6 +136,19 @@
           开始导入
         </el-button>
       </div>
+    </el-card>
+
+    <el-card shadow="hover" class="history-card">
+      <template #header><span>全部持仓操作</span></template>
+      <el-table :data="operationHistory" stripe v-loading="operationLoading">
+        <el-table-column prop="business_date" label="业务日期" width="120" />
+        <el-table-column prop="fund_code" label="基金代码" width="110" />
+        <el-table-column prop="fund_name" label="基金名称" min-width="160" />
+        <el-table-column prop="platform" label="平台" width="120" />
+        <el-table-column label="来源" width="90"><template #default="{ row }">{{ labelValue(row.source_type, 'source') }}</template></el-table-column>
+        <el-table-column label="类型" width="90"><template #default="{ row }">{{ labelValue(row.change_type, 'change') }}</template></el-table-column>
+        <el-table-column label="份额变化" width="180"><template #default="{ row }">{{ formatNum(row.shares_before) }} → {{ formatNum(row.shares_after) }}</template></el-table-column>
+      </el-table>
     </el-card>
 
     <!-- Import Result -->
@@ -231,7 +261,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { UploadFilled, Upload, Delete, Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { uploadExcel, getImportHistory, getImportChanges, simpleImport } from '../api/index.js'
+import { uploadExcel, getImportHistory, getImportChanges, simpleImport, previewSimpleImport, getOperationHistory } from '../api/index.js'
+import { validateQuickRecord, quickRecordKey, retainPartialQuickRecords, labelHoldingValue, validateHoldingFile, hasLoadingPreview as hasLoadingPreviewRows, localDateString } from '../utils/holdingImport.js'
 
 const uploadRef = ref(null)
 const selectedFile = ref(null)
@@ -239,12 +270,17 @@ const uploading = ref(false)
 const importResult = ref(null)
 const importHistory = ref([])
 const historyLoading = ref(false)
+const operationHistory = ref([])
+const operationLoading = ref(false)
 
 // Quick Import (RFC-002)
 const quickFundCode = ref('')
 const quickAmount = ref('')
 const quickRecords = ref([])
 const quickImporting = ref(false)
+const quickPlatform = ref('支付宝')
+const quickShareDate = ref(localDateString())
+const hasLoadingPreview = computed(() => hasLoadingPreviewRows(quickRecords.value))
 
 const changesDialogVisible = ref(false)
 const changesData = ref([])
@@ -288,6 +324,10 @@ function changeTypeTag(type) {
   return map[type] ?? 'info'
 }
 
+function labelValue(value, kind) {
+  return labelHoldingValue(value, kind)
+}
+
 function formatNum(val) {
   if (val == null) return '--'
   return Number(val).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -299,6 +339,13 @@ function deltaClass(val) {
 }
 
 function handleFileChange(file) {
+  const check = validateHoldingFile(file.raw)
+  if (!check.ok) {
+    ElMessage.error(check.message)
+    uploadRef.value?.clearFiles()
+    selectedFile.value = null
+    return
+  }
   selectedFile.value = file.raw
 }
 
@@ -308,53 +355,60 @@ function handleExceed() {
 
 // ---- Quick Import (RFC-002) ----
 
-function addQuickRecord() {
-  const code = quickFundCode.value.trim()
-  const amount = parseFloat(quickAmount.value)
-  if (!code) {
-    ElMessage.warning('请输入基金代码')
+async function addQuickRecord() {
+  const checked = validateQuickRecord({ fund_code: quickFundCode.value, market_value: quickAmount.value, platform: quickPlatform.value, share_date: quickShareDate.value })
+  if (!checked.ok) {
+    ElMessage.warning(checked.message)
     return
   }
-  if (!amount || amount <= 0) {
-    ElMessage.warning('请输入有效的持有金额')
-    return
-  }
-  // Check duplicate
-  if (quickRecords.value.some(r => r.fund_code === code)) {
+  if (quickRecords.value.some(r => quickRecordKey(r) === quickRecordKey(checked.value))) {
     ElMessage.warning('该基金代码已添加')
     return
   }
-  quickRecords.value.push({
-    fund_code: code,
-    market_value: amount,
-    platform: '支付宝',
+  const row = {
+    ...checked.value,
     _resolved_name: null,
     _shares_hint: null,
-  })
+    _status: 'loading',
+    _error: '',
+  }
+  quickRecords.value.push(row)
   quickFundCode.value = ''
   quickAmount.value = ''
+  try {
+    const preview = await previewSimpleImport(checked.value)
+    Object.assign(row, { _resolved_name: preview.fund_name, _shares_hint: preview.estimated_shares, latest_nav: preview.latest_nav, latest_nav_date: preview.latest_nav_date, _status: 'ready' })
+  } catch (error) {
+    row._status = 'error'
+    row._error = error?.response?.data?.detail || '基金信息获取失败'
+  } finally {
+  }
 }
 
 async function handleQuickImport() {
   if (quickRecords.value.length === 0) return
   quickImporting.value = true
   try {
-    const records = quickRecords.value.map(r => ({
+    const records = quickRecords.value.filter(r => r._status === 'ready').map(r => ({
       fund_code: r.fund_code,
       market_value: r.market_value,
       platform: r.platform,
-      share_date: new Date().toISOString().slice(0, 10),
+      share_date: r.share_date,
     }))
+    if (!records.length) return
     const res = await simpleImport(records)
+    await loadOperationHistory()
     const msg = `成功导入 ${res.success} 条` + (res.errors.length ? `，${res.errors.length} 条失败` : '')
-    if (res.errors.length > 0) {
+    const previewFailures = quickRecords.value.some(r => r._status === 'error')
+    if (res.errors.length > 0 || previewFailures) {
       ElMessage.warning(msg)
+      quickRecords.value = retainPartialQuickRecords(quickRecords.value, res)
     } else {
       ElMessage.success(msg)
+      quickRecords.value = []
     }
-    quickRecords.value = []
-  } catch {
-    ElMessage.error('快捷导入失败')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '快捷导入失败')
   } finally {
     quickImporting.value = false
   }
@@ -391,10 +445,13 @@ async function handleUpload() {
       ElMessage.warning('该文件已导入过')
     }
     loadHistory()
+    if (importResult.value.status === 'success' || importResult.value.status === 'partial') {
+      await loadOperationHistory()
+    }
     uploadRef.value?.clearFiles()
     selectedFile.value = null
-  } catch {
-    importResult.value = { status: 'error', error_message: '导入过程中发生错误，请检查文件格式' }
+  } catch (error) {
+    importResult.value = { status: 'error', error_message: error?.response?.data?.detail || error?.message || '导入过程中发生错误，请检查文件格式' }
   } finally {
     uploading.value = false
   }
@@ -431,8 +488,20 @@ async function loadHistory() {
   }
 }
 
+async function loadOperationHistory() {
+  operationLoading.value = true
+  try {
+    operationHistory.value = await getOperationHistory(100)
+  } catch {
+    // 错误由统一拦截器提示。
+  } finally {
+    operationLoading.value = false
+  }
+}
+
 onMounted(() => {
   loadHistory()
+  loadOperationHistory()
 })
 </script>
 

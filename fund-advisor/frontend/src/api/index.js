@@ -161,6 +161,14 @@ export function simpleImport(records) {
   return api.post('/holdings/simple-import', { records })
 }
 
+export function previewSimpleImport(record) {
+  return api.post('/holdings/simple-import/preview', record)
+}
+
+export function getOperationHistory(limit = 100) {
+  return api.get('/holdings/operations', { params: { limit } })
+}
+
 // ---- Recommendation (RFC-010: 择时 + 荐基) ----
 
 export function getFundTiming(payload) {

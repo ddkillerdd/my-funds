@@ -39,8 +39,11 @@
               ￥{{ totalMarketValue }}
             </span>
           </template>
-          <el-button type="primary" :icon="Plus" @click="openCreateDialog" style="margin-left: 12px">
-            新增
+          <el-button type="primary" :icon="Plus" @click="goQuickImport" style="margin-left: 12px">
+            快捷新增
+          </el-button>
+          <el-button @click="openCreateDialog">
+            精确录入
           </el-button>
           <el-button :icon="Refresh" @click="loadHoldings">
             刷新
@@ -505,13 +508,17 @@ function handleRowClick(row) {
   router.push(`/funds/${row.fund_code}`)
 }
 
+function goQuickImport() {
+  router.push('/import#quick')
+}
+
 async function handleDelete(row) {
   try {
     await deleteHolding(row.id)
     ElMessage.success(`已删除 ${row.fund_name}`)
     loadHoldings()
   } catch {
-    // handled by interceptor
+    // 删除错误由统一拦截器提示。
   }
 }
 
@@ -534,8 +541,8 @@ async function saveCost() {
     ElMessage.success('成本净值已更新')
     costDialogVisible.value = false
     loadHoldings()
-  } catch {
-    // handled by interceptor
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '精确录入失败')
   } finally {
     costSaving.value = false
   }

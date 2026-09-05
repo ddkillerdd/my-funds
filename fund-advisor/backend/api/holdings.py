@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from backend.database import get_db
-from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse, SimpleImportRequest, SimpleImportResult, HoldingChangeRequest, HoldingChangeResponse
+from backend.schemas.holding_change import HoldingChangeResponse as OperationChangeResponse
+from backend.schemas.holding import HoldingResponse, HoldingsByPlatformResponse, HoldingCostUpdate, HoldingCreate, HoldingDeleteResponse, SimpleImportRequest, SimpleImportResult, HoldingChangeRequest, HoldingChangeResponse, SimpleImportPreviewRequest, SimpleImportPreviewResponse
 
 router = APIRouter()
 
@@ -106,3 +107,26 @@ def simple_import(
     """
     from backend.services.holding_service import HoldingService
     return HoldingService(db).simple_import(body.records)
+
+
+@router.post("/simple-import/preview", response_model=SimpleImportPreviewResponse)
+def preview_simple_import(
+    body: SimpleImportPreviewRequest,
+    db: Session = Depends(get_db),
+):
+    """只读预览快捷导入，不创建基金或持仓。"""
+    from backend.services.holding_service import HoldingService
+    try:
+        return HoldingService(db).preview_simple_import(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/operations", response_model=list[OperationChangeResponse])
+def get_operation_history(
+    limit: int = Query(100, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """读取最近统一持仓操作历史。"""
+    from backend.services.holding_service import HoldingService
+    return HoldingService(db).get_operation_history(limit)
