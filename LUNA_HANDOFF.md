@@ -109,3 +109,10 @@ Staging-only 基线例外：detached 快照中的 test_position.py::test_action_
 - 指定 npm 构建已在允许启动 esbuild 子进程的执行环境中通过（Vite 6.4.1，2103 个模块，10.67 秒，仅有大于 500 kB chunk 警告）；此前受限沙箱的 `spawn EPERM` 不作为代码/发布阻塞。后端与分析引擎 pytest 首个错误仍为 Bundled Python 缺少 `pytest`。Python 全量测试、迁移和 staging 尚未验收。
 - 精确提交白名单及四组建议已写入 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md`；两个受保护 `fund-analyzer/tests` 文件排除且哈希未变。
 - 当前已完成本地暂存/提交流程；不允许推送或任何服务器/生产操作，等待独立 GitHub 推送确认。
+
+## 7. 2026-09-05 c5444b63 staging 回归修复交接
+
+- c5444b63 镜像构建成功；合成 MySQL 曾健康运行，空库迁移至 `b1c2d3e4f5a6`，纯合成旧 schema `a1b2c3d4e5f6` 升级至 head 成功。
+- 初次目标快照后端 68 通过/4 失败、分析引擎 163 通过/2 个已登记保护失败；两文件修复后定向测试 4/4、后端完整测试 72/72 均通过，显式带 `-p no:cacheprovider`。
+- c544 staging MySQL 已停止；runtime、镜像、网络、卷和合成数据保留，backend/frontend 未启动。生产、旧 6a774457 staging、OpenClaw、systemd、cron 和生产数据库未改。
+- 下一步按包含两文件修复的新提交 SHA 重建独立 staging；迁移、全量测试和运行验收完成前，不宣称生产可用。

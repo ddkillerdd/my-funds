@@ -1812,3 +1812,10 @@ fund-advisor/
 - 后端与分析引擎完整 pytest 均显式使用 `-p no:cacheprovider`，Bundled Python 首个环境阻塞为缺少 `pytest`，均退出码 1；未安装依赖。因此不能将 AST 或前端通过表述为 Python 全量测试通过。
 - Alembic 空库/旧 schema 升级、staging 验证和生产部署均未执行，不能宣称可发布生产。
 - 当前等待独立 GitHub 推送确认；未推送、未部署，工作区仅保留两个受保护测试文件的既有差异。
+
+### 24.1 c5444b63 staging 回归修复结果
+
+- c5444b63 镜像构建成功；合成 MySQL 曾健康运行，空库迁移至 `b1c2d3e4f5a6`、旧 schema 从 `a1b2c3d4e5f6` 升级至 head 均成功。
+- 初次测试为后端 68 通过/4 失败、分析引擎 163 通过/2 个已登记保护失败；其中 3 个后端失败为测试夹具问题，1 个为 legacy 事件边界实现问题。
+- 修复后 4 个定向测试和后端完整 72 个测试全部通过，均使用 `-p no:cacheprovider`；前端 7/7 和 Vite 构建通过。
+- c544 staging MySQL 已停止，runtime、镜像、网络、卷和合成数据保留；backend/frontend 未启动。生产和旧 staging 未改变，下一步需按新 SHA 重建 staging，仍不得视为生产可用。

@@ -85,3 +85,10 @@
 - 前端生产构建已在允许启动 esbuild 子进程的执行环境中通过：Vite 6.4.1 转换 2103 个模块、耗时 10.67 秒，仅有大于 500 kB chunk 警告；此前受限沙箱的 `spawn EPERM` 不作为代码/发布阻塞。两套完整 pytest 仍因 Bundled Python 缺少 `pytest` 各退出 1。不得据此宣称生产可发布。
 - `fund-advisor/PROJECT.md`、`fund-advisor/CHANGELOG.md` 和 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md` 已记录实际结果、白名单与四组拆分建议。暂存区为空，保护文件哈希不变。
 - 当前停止，等待独立的 GitHub 推送确认；未推送、未部署，未操作服务器、staging、生产、OpenClaw、systemd、cron 或数据库。
+
+## 5. 2026-09-05 c5444b63 staging 回归修复状态
+
+- c5444b63 镜像构建成功；合成 MySQL 曾启动并健康，空库迁移到 `b1c2d3e4f5a6`、旧 schema `a1b2c3d4e5f6` 升级到 head 成功。
+- 初次后端测试 68 通过/4 失败，分析引擎 163 通过/2 个已登记保护失败；后端失败中 3 个为测试夹具问题、1 个为事件优先 legacy 边界实现问题。
+- 两文件修复后定向测试 4/4、后端完整测试 72/72 通过，均带 `-p no:cacheprovider`；前端 7/7 与 Vite 构建通过。
+- c544 staging MySQL 已停止，runtime、镜像、网络、卷和合成数据保留；backend/frontend 未启动。生产、旧 staging、OpenClaw 未改，下一步按新 SHA 重建 staging，仍未达到生产可用结论。

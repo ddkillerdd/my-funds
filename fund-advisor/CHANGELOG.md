@@ -13,6 +13,11 @@
 - 四组本地提交已按白名单完成，当前等待独立 GitHub 推送确认；staging、生产、服务器、OpenClaw、systemd、cron 和数据库均未操作。
 - 在 Python 全量测试、迁移和隔离 staging 验收完成前，不宣称生产可发布。
 
+### Staging and regression evidence
+- c5444b63 staging 镜像构建成功；合成 MySQL 曾健康运行，空库迁移至 `b1c2d3e4f5a6`，旧 schema `a1b2c3d4e5f6` 升级至 head 成功。
+- 初次后端 68/4、分析引擎 163/2（后者为两个已登记保护失败）；修复后定向测试 4/4、后端完整测试 72/72 通过，均带 `-p no:cacheprovider`。
+- c544 staging MySQL 已停止并保留 runtime、镜像、网络、卷和合成数据；生产与旧 staging 未改，待新修复 SHA 重建 staging 后继续验收。
+
 ## [7.1] - 2026-08-03 — RFC-020 长线分析增强（Phase 1 + Phase 2）
 
 ### Added（Phase 1）
