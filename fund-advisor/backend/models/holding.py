@@ -26,6 +26,7 @@ class FundHolding(Base):
     currency = Column(String(10), default="人民币")
     dividend_mode = Column(String(20), default=None)
     last_import_id = Column(BigInteger, default=None)
+    source_type = Column(String(20), nullable=False, default="legacy", comment="file/manual/quick/legacy")
     status = Column(SmallInteger, default=1, comment="1=持有 0=已清仓")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

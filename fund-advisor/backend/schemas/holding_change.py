@@ -2,13 +2,13 @@
 
 from pydantic import BaseModel
 from decimal import Decimal
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 
 class HoldingChangeResponse(BaseModel):
     id: int
-    import_id: int
+    import_id: Optional[int] = None
     holding_id: Optional[int] = None
     fund_code: str
     fund_name: Optional[str] = None
@@ -20,6 +20,8 @@ class HoldingChangeResponse(BaseModel):
     nav_at_change: Optional[Decimal] = None
     mv_before: Optional[Decimal] = None
     mv_after: Optional[Decimal] = None
+    business_date: date
+    source_type: str
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

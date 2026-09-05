@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 # 参数：fundCode=基金代码, pageIndex=页码, pageSize=每页条数
 # 可选：startDate/endDate 限定日期范围
 HISTORY_NAV_URL = "https://api.fund.eastmoney.com/f10/lsjz"
+FUND_PROFILE_URL = "https://fund.eastmoney.com/pingzhongdata/{fund_code}.js"
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
@@ -47,6 +49,55 @@ class NavData:
         self.change_pct = change_pct
         # 是否货币基金（由接口返回的 SYType == "每万份收益" 判断）
         self.is_money_fund = is_money_fund
+
+
+@dataclass
+class FundInfo:
+    """公开基金信息补全结果。"""
+
+    fund_code: str
+    fund_name: str
+    latest_nav: Decimal
+    latest_nav_date: date
+
+
+def fetch_fund_info(fund_code: str) -> Optional[FundInfo]:
+    """按需获取公开基金名称和最新净值。"""
+    if not isinstance(fund_code, str) or not re.fullmatch(r"\d{6}", fund_code):
+        return None
+    try:
+        response = httpx.get(
+            FUND_PROFILE_URL.format(fund_code=fund_code),
+            headers=_random_headers(),
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        name_match = re.search(r'fS_name\s*=\s*["\']([^"\']+)', response.text)
+        trend_match = re.search(
+            r'Data_netWorthTrend\s*=\s*(\[.*?\]);', response.text, re.DOTALL
+        )
+        if not name_match or not trend_match:
+            return None
+        trend = json.loads(trend_match.group(1))
+        if not trend:
+            return None
+        latest = trend[-1]
+        latest_nav = Decimal(str(latest["y"]))
+        timestamp = float(latest["x"])
+        if timestamp <= 0:
+            return None
+        latest_nav_date = datetime.fromtimestamp(timestamp / 1000).date()
+        fund_name = name_match.group(1).strip()
+        if not fund_name or latest_nav <= 0:
+            return None
+        return FundInfo(
+            fund_code=fund_code,
+            fund_name=fund_name,
+            latest_nav=latest_nav,
+            latest_nav_date=latest_nav_date,
+        )
+    except (KeyError, TypeError, ValueError, OverflowError, InvalidOperation, httpx.HTTPError):
+        return None
 
 
 def _parse_jsonp(text: str) -> dict:
