@@ -698,7 +698,8 @@ class CalendarService:
         if applicable:
             return Decimal(applicable[-1].shares_after or ZERO)
         if (
-            getattr(holding, "source_type", "legacy") == "legacy"
+            not events
+            and getattr(holding, "source_type", "legacy") == "legacy"
             and holding.status == 1
             and holding.share_date is not None
             and holding.share_date <= target_date

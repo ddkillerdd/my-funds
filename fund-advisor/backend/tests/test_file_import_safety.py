@@ -63,14 +63,22 @@ def test_multisheet_parser_merges_and_closes_workbook(tmp_path, monkeypatch):
     def tracked(*args, **kwargs):
         workbook = original(*args, **kwargs)
         loaded.append(workbook)
+        original_close = workbook.close
+
+        def close_and_record():
+            closed.append(True)
+            return original_close()
+
+        workbook.close = close_and_record
         return workbook
 
+    closed = []
     monkeypatch.setattr("backend.services.excel_parser.openpyxl.load_workbook", tracked)
     holdings, errors, data_date = parse_excel(path)
     assert len(holdings) == 1
     assert errors == []
     assert data_date == date(2026, 9, 4)
-    assert loaded and loaded[0]._archive is None
+    assert loaded and closed == [True]
 
 
 def test_mixed_dates_are_rejected_before_merge(tmp_path):
@@ -118,13 +126,15 @@ def test_zip_path_validation_rejects_slashes_drive_unc_and_nul():
 def test_zip_limits_cover_member_count_and_sizes():
     """验证成员数量、单成员大小和总解压大小门禁。"""
     service = ImportService(None)
-    make = lambda size: SimpleNamespace(filename="x.xlsx", file_size=size, external_attr=0, flag_bits=0, is_dir=lambda: False)
+    make = lambda name, size: SimpleNamespace(filename=name, file_size=size, external_attr=0, flag_bits=0, is_dir=lambda: False)
     with pytest.raises(ValueError, match="成员数"):
-        service._validate_zip_members([make(1)] * 101)
+        service._validate_zip_members([make(f"member-{index}.xlsx", 1) for index in range(101)])
     with pytest.raises(ValueError, match="单个文件"):
-        service._validate_zip_members([make(20 * 1024 * 1024 + 1)])
+        service._validate_zip_members([make("single.xlsx", 20 * 1024 * 1024 + 1)])
     with pytest.raises(ValueError, match="总量"):
-        service._validate_zip_members([make(20 * 1024 * 1024)] * 6)
+        service._validate_zip_members([
+            make(f"member-{index}.xlsx", 20 * 1024 * 1024) for index in range(6)
+        ])
 
 
 def test_zip_rejects_duplicate_casefolded_members_and_special_members():
@@ -234,6 +244,8 @@ def test_batch_flush_merge_and_commit_failures_rollback():
         service = ImportService(db)
         if failure == "merge":
             service._merge_holdings = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("merge failed"))
+        elif failure == "commit":
+            service._merge_holdings = lambda *args, **kwargs: (0, 0, 0, [])
         with pytest.raises(RuntimeError):
             service._import_parsed_batch("safe.xlsx", "hash", [SimpleNamespace()], [], date(2026, 9, 4))
         assert db.rollbacks == 1
