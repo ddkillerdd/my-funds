@@ -1,7 +1,26 @@
 # Luna 开发接手入口
 
-> 交接日期：2026-09-03
-> 交接目标：生产失败自动重试已经停止，旧健康后端继续服务；等待用户授权恢复本地发布包收口，再逐门推进 GitHub 和隔离 staging。
+> 交接日期：2026-09-05
+> 交接目标：阶段 A、B1、B2、C、D 已收口；下一任务按 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md` 完成文档和提交前验证，未确认前不提交、推送或部署。
+
+## 0. 2026-09-05 当前权威交接
+
+本节取代下文旧的“当前状态”和“下一阶段任务”；旧内容只作历史证据。
+
+- 当前本地分支为 `codex/holding-ingestion-correctness`，四组本地提交已完成，暂存区为空；该正确性分支尚未推送。
+- 服务器生产外 staging 已按该 SHA 部署，后端、前端与独立 MySQL 健康；仅绑定回环端口，scheduler、启动 NAV 回补、外部模型和邮件关闭。
+- 用户通过 staging 快捷导入测试记录后，页面出现占位基金名称、缺失最新净值和零份额；这批测试数据不得复制到本地或输出明细。
+- 只读代码审查确认问题集中于：按需基金信息补全、零份额安全修复、统一持仓身份与账本、Excel/ZIP 来源内清仓、事务、解析和上传安全。
+- 当前工作区仍有五个原第四组差异。用户已允许本次修复修改其中三个服务文件：
+  - `fund-advisor/backend/services/calendar_service.py`
+  - `fund-advisor/backend/services/excel_parser.py`
+  - `fund-advisor/backend/services/nav_service.py`
+- 上述三个文件现有差异仅增加 `from __future__ import annotations`，必须保留并允许在其上继续修改。
+- 以下两个文件仍不得编辑、还原、暂存或提交：
+  - `fund-analyzer/tests/test_position.py`
+  - `fund-analyzer/tests/test_screener.py`
+- 用户已授权本地正确性修复；执行分支为 `codex/holding-ingestion-correctness`。当前阶段允许修改 `07` 白名单并运行测试，不允许暂存、提交、推送、更新服务器 staging、执行服务器迁移或切生产。
+- 总执行令：`07_LUNA_HOLDING_INGESTION_CORRECTNESS.md`。阶段 A 至 D 已分别在 `08` 至 `12` 收口；当前准入令为 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md`。不得跳过确认门自行提交、推送或部署。
 
 ## 1. 已完成事项
 
@@ -66,12 +85,10 @@
 
 ## 4. 下一阶段任务
 
-本地可复现性修复已完成但发布包尚未提交。`06` 第一、第二阶段均已完成，Luna 下一步严格按 `04_LUNA_STAGING_PACKAGE_AND_DEPLOYMENT.md`：
+本地持仓正确性发布包已按白名单拆分为四个本地提交，但尚未推送。下一步等待独立 GitHub 推送确认：
 
-1. 等待用户在 Sol 指挥任务中确认恢复 `04` 第二阶段。
-2. 获得确认后，由 Sol 后台向现有 Luna 发送执行包；Luna 先做最小漂移复核，再只在本地创建 `codex/p0-staging-readiness`、生成 Linux/Python 3.12 锁、运行干净验证并按白名单形成三个本地提交。
-3. 本地提交完成后停止并汇报；GitHub 推送必须另获确认。
-4. 推送后只读复核服务器 staging 准入；创建服务器目录、配置、容器、卷和合成数据库必须再获独立确认。
+1. 等待独立 GitHub 推送确认。
+2. 推送后只读复核服务器 staging 准入；创建服务器目录、配置、容器、卷和合成数据库必须再获独立确认。
 
 当前尚未获得 `04` 第二阶段确认。不得创建分支、生成锁、暂存、提交、推送、拉取镜像或创建临时环境；不得执行新的 systemd 写操作、终止旧 uvicorn、修改 OpenClaw、cron、tat_agent 或操作数据库。
 
@@ -84,3 +101,11 @@
 - 不重复重写已经验收的 P0 实现，不开始 P1，不顺手处理第四组文件。
 - 本机 Docker Hub 出站连通性仍不可达；staging 镜像门禁改由明确 GitHub SHA 在生产工作区之外的服务器完成，本机阻塞不构成生产发布验收。
 Staging-only 基线例外：detached 快照中的 test_position.py::test_action_amount_with_total_mv 与 test_screener.py::test_base_weights_loaded 允许登记为已知失败；这不构成全绿验收，生产发布仍被阻塞。
+
+## 6. 2026-09-05 最终准入第一阶段实际状态
+
+- A-D 持仓正确性实现保持未提交工作区状态；最终准入文档、项目说明和变更记录已补齐实际检查证据。
+- `git diff --check` 通过；变更/新增 22 个 Python 文件 AST 通过；前端纯逻辑测试 7/7 通过。
+- 指定 npm 构建已在允许启动 esbuild 子进程的执行环境中通过（Vite 6.4.1，2103 个模块，10.67 秒，仅有大于 500 kB chunk 警告）；此前受限沙箱的 `spawn EPERM` 不作为代码/发布阻塞。后端与分析引擎 pytest 首个错误仍为 Bundled Python 缺少 `pytest`。Python 全量测试、迁移和 staging 尚未验收。
+- 精确提交白名单及四组建议已写入 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md`；两个受保护 `fund-analyzer/tests` 文件排除且哈希未变。
+- 当前已完成本地暂存/提交流程；不允许推送或任何服务器/生产操作，等待独立 GitHub 推送确认。

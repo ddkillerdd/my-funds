@@ -2,6 +2,17 @@
 
 > 版本变更摘要。详细开发日志见 `DEVLOG.md`。
 
+## [Unreleased] - 2026-09-05 — 持仓正确性最终准入第一阶段收口
+
+### Verified
+- 完成 A-D 持仓正确性功能的本地差异分组复核；未修改生产实现，未处理两个受保护的 `fund-analyzer/tests` 文件。
+- 变更范围内 22 个 Python 文件 AST 解析通过，`git diff --check` 通过，前端纯逻辑测试 7/7 通过。
+- 指定 Node/npm 生产构建在允许启动 esbuild 子进程的执行环境中通过（Vite 6.4.1，2103 个模块，10.67 秒，仅有大于 500 kB chunk 警告）；此前受限沙箱的 `spawn EPERM` 不作为代码/发布阻塞。后端与分析引擎 pytest 因 Bundled Python 缺少 `pytest` 各退出 1，尚未形成完整 Python 通过证据。
+
+### Release boundary
+- 四组本地提交已按白名单完成，当前等待独立 GitHub 推送确认；staging、生产、服务器、OpenClaw、systemd、cron 和数据库均未操作。
+- 在 Python 全量测试、迁移和隔离 staging 验收完成前，不宣称生产可发布。
+
 ## [7.1] - 2026-08-03 — RFC-020 长线分析增强（Phase 1 + Phase 2）
 
 ### Added（Phase 1）

@@ -1,7 +1,26 @@
 # Luna 从这里开始
 
-> 更新日期：2026-09-03
-> 当前任务：`06_LUNA_PRODUCTION_STABILIZATION.md` 第二阶段已经完成，失败的 backend systemd 自动重试已停止且旧健康后端继续服务；等待用户授权恢复 `04` 第二阶段的本地发布包收口。
+> 更新日期：2026-09-05
+> 当前任务：阶段 A、B1、B2、C、D 已收口；四组本地提交已完成，下一步等待独立 GitHub 推送确认，不部署。
+
+## 0. 2026-09-05 当前权威增量
+
+本节取代下文旧的“当前基线”和“下一任务”描述；下文保留为历史交接证据。
+
+- 当前本地分支：`codex/holding-ingestion-correctness`；四组本地提交已完成，暂存区为空。
+- 本地正确性分支尚未推送；下一步需独立确认后才可推送 GitHub。
+- 生产外 staging 已按该 SHA 部署并运行；用户验收发现持仓快捷导入不能自动补全基金名称/净值，且新增、快捷导入和文件导入语义不一致。
+- Sol 已完成代码级只读审查，确认还涉及零份额修复、Excel/ZIP 全局误清仓、手工变动账本不可见、减仓符号、事务和上传安全等同一条正确性链路。
+- 总执行令为 `07_LUNA_HOLDING_INGESTION_CORRECTNESS.md`；阶段 A 至 D 的结论分别在 `08`、`09`、`10`、`11`、`12`，当前准入令为 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md`。
+- 用户允许本次修复修改：
+  - `fund-advisor/backend/services/calendar_service.py`
+  - `fund-advisor/backend/services/excel_parser.py`
+  - `fund-advisor/backend/services/nav_service.py`
+- 以下两个文件仍严格保护：
+  - `fund-analyzer/tests/test_position.py`
+  - `fund-analyzer/tests/test_screener.py`
+- 当前 staging、生产、OpenClaw 和数据库均不属于本地实现阶段写入范围。
+- 本地阶段允许创建 `codex/holding-ingestion-correctness`、修改 `07` 白名单文件并运行测试；不允许暂存、提交、推送或服务器写入。
 
 ## 1. 文档读取路由
 
@@ -11,7 +30,7 @@
 2. 本文件 `00_LUNA_START_HERE.md`：当前阶段、可信基线和下一任务入口。
 3. `LUNA_HANDOFF.md`：最新本地、GitHub、服务器和 OpenClaw 状态。
 4. `docs/operations/CODEX_LUNA_ORCHESTRATION.md`：Sol 指挥、Luna 执行、额度优化和后台调度规范。
-5. 当前阶段执行令：目前是 `04_LUNA_STAGING_PACKAGE_AND_DEPLOYMENT.md`。
+5. 当前阶段执行令：先读总令 `07_LUNA_HOLDING_INGESTION_CORRECTNESS.md`，再严格执行 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md`。
 
 其余文档按任务读取，不再每轮全部重读：
 
@@ -51,10 +70,18 @@
 
 1. `06` 第一、第二阶段已经完成，不再执行 `systemctl stop`，也不为美化状态擅自运行 `reset-failed`。
 2. 等待用户在 Sol 指挥任务中明确确认恢复 `04` 第二阶段；确认后由 Sol 后台把单阶段执行包发送给现有 Luna，用户无需手工复制。
-3. `04` 第二阶段只完成本地分支、Linux 锁、干净测试/构建和三个本地提交；完成后汇报并等待独立的 GitHub 推送确认。
+3. 四组持仓正确性本地提交已完成；等待独立的 GitHub 推送确认。
 4. GitHub 推送完成后，再进行服务器 staging 写入前的只读复核并等待独立的 staging 部署确认。
 5. staging 验收、备份与回滚门禁满足后，才能另行规划生产单实例切换。
 
 未获得对应阶段确认前，不得创建分支、生成锁、暂存、提交、推送、执行 systemd 写操作、向进程发送信号、部署 staging、覆盖 OpenClaw 生产工作区或切换生产流量。不得重复改写 P0、调整策略参数或处理 5 个第四组文件。
 
 系统只提供建议。只有用户确认实际操作及平台成交信息后才同步持仓；用户未操作时，持仓保持原样。
+
+## 4. 2026-09-05 持仓正确性最终准入收口
+
+- A-D 已完成代码级验收；本地最终准入已完成差异分组、敏感扫描、AST、前端纯逻辑测试和构建/pytest 尝试。
+- 已确认：AST 22 个 Python 文件通过，前端纯逻辑 7/7 通过，`git diff --check` 通过。
+- 前端生产构建已在允许启动 esbuild 子进程的执行环境中通过：Vite 6.4.1 转换 2103 个模块、耗时 10.67 秒，仅有大于 500 kB chunk 警告；此前受限沙箱的 `spawn EPERM` 不作为代码/发布阻塞。两套完整 pytest 仍因 Bundled Python 缺少 `pytest` 各退出 1。不得据此宣称生产可发布。
+- `fund-advisor/PROJECT.md`、`fund-advisor/CHANGELOG.md` 和 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md` 已记录实际结果、白名单与四组拆分建议。暂存区为空，保护文件哈希不变。
+- 当前停止，等待独立的 GitHub 推送确认；未推送、未部署，未操作服务器、staging、生产、OpenClaw、systemd、cron 或数据库。
