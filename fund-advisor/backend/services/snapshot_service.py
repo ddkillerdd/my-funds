@@ -10,7 +10,6 @@ from backend.models.fund import Fund
 from backend.models.holding import FundHolding
 from backend.models.holding_change import HoldingChange
 from backend.models.holding_daily_pnl import HoldingDailyPnL
-from backend.models.import_record import ImportRecord
 from backend.models.nav_history import FundNavHistory
 from backend.models.portfolio_snapshot import PortfolioSnapshot
 
@@ -141,11 +140,9 @@ class SnapshotService:
 
     def _calculate_net_inflow(self, snapshot_date: date) -> Decimal:
         """Calculate net cash inflow for the given date from holding changes."""
-        # Find import records whose data_date matches snapshot_date
         rows = self.db.execute(
             select(HoldingChange)
-            .join(ImportRecord, HoldingChange.import_id == ImportRecord.id)
-            .where(ImportRecord.data_date == snapshot_date)
+            .where(HoldingChange.business_date == snapshot_date)
         ).scalars().all()
 
         net_inflow = Decimal("0")
@@ -199,16 +196,15 @@ class SnapshotService:
         mv_after for every holding (using the most recent import up to that date).
         Returns the number of snapshots created.
         """
-        # Get all distinct import dates in order
-        import_dates = self.db.execute(
-            select(ImportRecord.data_date)
-            .where(ImportRecord.data_date.isnot(None))
+        # 事件业务日期是历史快照候选日期的唯一来源。
+        event_dates = self.db.execute(
+            select(HoldingChange.business_date)
             .distinct()
-            .order_by(ImportRecord.data_date.asc())
+            .order_by(HoldingChange.business_date.asc())
         ).scalars().all()
 
         created = 0
-        for data_date in import_dates:
+        for data_date in event_dates:
             # Skip if snapshot already exists for this date
             existing = self.db.execute(
                 select(PortfolioSnapshot)
@@ -217,41 +213,22 @@ class SnapshotService:
             if existing:
                 continue
 
-            # Get max import_id for imports up to this date
-            max_import_id = self.db.execute(
-                select(func.max(ImportRecord.id))
-                .where(ImportRecord.data_date <= data_date)
-            ).scalar()
-            if not max_import_id:
-                continue
-
-            # For each holding, get the mv_after from its most recent change
-            # at or before this import date
-            subq = (
-                select(
-                    HoldingChange.holding_id,
-                    func.max(HoldingChange.import_id).label("last_import_id"),
-                )
-                .where(HoldingChange.import_id <= max_import_id)
-                .where(HoldingChange.holding_id.isnot(None))
-                .group_by(HoldingChange.holding_id)
-                .subquery()
-            )
-
             rows = self.db.execute(
-                select(HoldingChange.mv_after, HoldingChange.change_type)
-                .join(
-                    subq,
-                    (HoldingChange.holding_id == subq.c.holding_id)
-                    & (HoldingChange.import_id == subq.c.last_import_id),
-                )
+                select(HoldingChange)
+                .where(HoldingChange.business_date <= data_date)
+                .where(HoldingChange.holding_id.isnot(None))
+                .order_by(HoldingChange.holding_id, HoldingChange.business_date, HoldingChange.id)
             ).all()
 
+            latest_by_holding = {}
+            for (change,) in rows:
+                latest_by_holding[change.holding_id] = change
             total_mv = Decimal("0")
             active_count = 0
-            for mv_after, change_type in rows:
-                if change_type != "clear" and mv_after:
-                    total_mv += Decimal(str(mv_after))
+            for change in latest_by_holding.values():
+                if change.change_type != "clear" and change.shares_after and change.shares_after > 0:
+                    if change.mv_after is not None:
+                        total_mv += Decimal(str(change.mv_after))
                     active_count += 1
 
             snapshot = PortfolioSnapshot(
@@ -410,44 +387,39 @@ class SnapshotService:
         """
         money_fund_codes = self._get_money_fund_codes()
 
-        # 对每个 holding 找 data_date <= snapshot_date 范围内最近一次变更（按 import_id 最大）
-        subq = (
-            select(
-                HoldingChange.holding_id,
-                func.max(HoldingChange.import_id).label("last_import_id"),
-            )
-            .join(ImportRecord, HoldingChange.import_id == ImportRecord.id)
-            .where(
-                ImportRecord.data_date <= snapshot_date,
-                HoldingChange.holding_id.isnot(None),
-            )
-            .group_by(HoldingChange.holding_id)
-            .subquery()
-        )
-
-        hist_rows = self.db.execute(
-            select(
-                FundHolding.id,
-                FundHolding.fund_code,
-                HoldingChange.shares_after,
-                HoldingChange.change_type,
-            )
-            .join(subq, FundHolding.id == subq.c.holding_id)
-            .join(
-                HoldingChange,
-                (HoldingChange.holding_id == subq.c.holding_id)
-                & (HoldingChange.import_id == subq.c.last_import_id),
-            )
-        ).all()
+        # 每个持仓按 business_date、id 取目标日最后事件。
+        changes = self.db.execute(
+            select(HoldingChange)
+            .where(HoldingChange.business_date <= snapshot_date)
+            .where(HoldingChange.holding_id.isnot(None))
+            .order_by(HoldingChange.holding_id, HoldingChange.business_date, HoldingChange.id)
+        ).scalars().all()
+        latest_by_holding = {change.holding_id: change for change in changes}
 
         # {holding_id: (fund_code, shares)} for holdings active on snapshot_date
         active_holdings: dict[int, tuple[str, Decimal]] = {}
-        for holding_id, fund_code, shares_after, change_type in hist_rows:
-            if change_type == "clear" or shares_after is None:
+        for holding_id, change in latest_by_holding.items():
+            if change.change_type == "clear" or change.shares_after is None:
                 continue
-            s = Decimal(str(shares_after))
+            s = Decimal(str(change.shares_after))
             if s > Decimal("0"):
-                active_holdings[holding_id] = (fund_code, s)
+                active_holdings[holding_id] = (change.fund_code, s)
+
+        # 无事件的 legacy 持仓仅在可靠 share_date 已生效时兼容读取。
+        legacy_holdings = self.db.execute(
+            select(FundHolding)
+            .where(FundHolding.status == 1)
+            .where(FundHolding.source_type == "legacy")
+        ).scalars().all()
+        for holding in legacy_holdings:
+            if (
+                holding.id not in latest_by_holding
+                and holding.share_date is not None
+                and holding.shares is not None
+                and holding.share_date <= snapshot_date
+                and holding.shares > 0
+            ):
+                active_holdings[holding.id] = (holding.fund_code, holding.shares)
 
         if not active_holdings:
             return
@@ -586,49 +558,31 @@ class SnapshotService:
         return set(rows)
 
     def _get_shares_map_on_date(self, target_date: date) -> dict[str, Decimal]:
-        """返回 {fund_code: total_shares}，表示 target_date 当日每个基金的持仓份额。
-
-        通过查询 holding_changes + import_records，找到每个持仓在 target_date
-        之前最近一次导入后的 shares_after。同一 fund_code 的多个持仓（不同平台/账户）
-        份额累加合并。change_type == "clear" 或无记录的持仓份额视为 0。
-        """
+        """按持仓事件时间线重建目标日份额，再按基金代码汇总。"""
         db = self.db
+        changes = db.execute(
+            select(HoldingChange)
+            .where(HoldingChange.business_date <= target_date)
+            .where(HoldingChange.holding_id.isnot(None))
+            .order_by(HoldingChange.holding_id, HoldingChange.business_date, HoldingChange.id)
+        ).scalars().all()
+        latest_by_holding = {change.holding_id: change for change in changes}
 
-        # 对每个 holding，找 data_date <= target_date 范围内 import_id 最大的那次变更
-        subq = (
-            select(
-                HoldingChange.holding_id,
-                func.max(HoldingChange.import_id).label("last_import_id"),
-            )
-            .join(ImportRecord, HoldingChange.import_id == ImportRecord.id)
-            .where(
-                ImportRecord.data_date <= target_date,
-                HoldingChange.holding_id.isnot(None),
-            )
-            .group_by(HoldingChange.holding_id)
-            .subquery()
-        )
-
-        rows = db.execute(
-            select(
-                FundHolding.fund_code,
-                HoldingChange.shares_after,
-                HoldingChange.change_type,
-            )
-            .join(subq, FundHolding.id == subq.c.holding_id)
-            .join(
-                HoldingChange,
-                (HoldingChange.holding_id == subq.c.holding_id)
-                & (HoldingChange.import_id == subq.c.last_import_id),
-            )
-        ).all()
-
+        holdings = db.execute(select(FundHolding)).scalars().all()
         shares_map: dict[str, Decimal] = {}
-        for fund_code, shares_after, change_type in rows:
-            if change_type == "clear" or shares_after is None:
-                continue
-            s = Decimal(str(shares_after))
-            if s > Decimal("0"):
-                shares_map[fund_code] = shares_map.get(fund_code, Decimal("0")) + s
-
+        for holding in holdings:
+            change = latest_by_holding.get(holding.id)
+            if change is not None:
+                shares = Decimal(change.shares_after or Decimal("0"))
+            elif (
+                holding.status == 1
+                and holding.source_type == "legacy"
+                and holding.share_date is not None
+                and holding.share_date <= target_date
+            ):
+                shares = Decimal(holding.shares or Decimal("0"))
+            else:
+                shares = Decimal("0")
+            if shares > 0:
+                shares_map[holding.fund_code] = shares_map.get(holding.fund_code, Decimal("0")) + shares
         return shares_map

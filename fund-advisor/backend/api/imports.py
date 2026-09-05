@@ -15,8 +15,8 @@ async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db
     """Upload and import fund holdings file.
 
     Accepts:
-    - Excel files (.xlsx, .xls): Single file import
-    - ZIP files: May contain multiple Excel files to import in batch
+    - Excel files (.xlsx): Single file import
+    - ZIP files: May contain multiple .xlsx files to import in one batch
     """
     from backend.services.import_service import ImportService
     return await ImportService(db).import_file(file)

@@ -1,5 +1,7 @@
 """NAV service - business logic for NAV updates."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
@@ -11,8 +13,9 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from backend.models.fund import Fund
 from backend.models.holding import FundHolding
+from backend.models.holding_change import HoldingChange
 from backend.models.nav_history import FundNavHistory
-from backend.services.nav_fetcher import batch_fetch_nav, NavData
+from backend.services.nav_fetcher import batch_fetch_nav, fetch_fund_info, NavData
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -71,14 +74,19 @@ class NavService:
         if not fund_codes:
             return {"status": "no_holdings"}
 
-        # Use first import date as start, so we get exactly the data needed
-        from backend.models.import_record import ImportRecord
-        first_import_date = self.db.execute(
-            select(func.min(ImportRecord.data_date))
-            .where(ImportRecord.data_date.isnot(None))
+        # 事件业务日期优先；无事件 legacy 持仓只使用可靠 share_date。
+        first_change_date = self.db.execute(
+            select(func.min(HoldingChange.business_date))
         ).scalar()
-
-        start_date = str(first_import_date) if first_import_date else None
+        first_legacy_date = self.db.execute(
+            select(func.min(FundHolding.share_date)).where(
+                FundHolding.status == 1,
+                FundHolding.source_type == "legacy",
+                FundHolding.share_date.isnot(None),
+            )
+        ).scalar()
+        dates = [value for value in (first_change_date, first_legacy_date) if value is not None]
+        start_date = str(min(dates)) if dates else None
         # page_size large enough to cover all trading days since start_date
         page_size = max(days, 300)
 
@@ -136,6 +144,16 @@ class NavService:
             select(Fund).where(Fund.fund_code == nav.fund_code)
         ).scalar_one_or_none()
         if fund:
+            if self._is_placeholder_name(fund.fund_name, fund.fund_code):
+                # 占位基金必须先取得公开名称和有效净值，失败时保持原记录不变。
+                info = fetch_fund_info(nav.fund_code)
+                if not info:
+                    return
+                fund.fund_name = info.fund_name
+                fund.latest_nav = info.latest_nav
+                fund.latest_nav_date = info.latest_nav_date
+                self._repair_placeholder_holdings(fund)
+                return
             if fund.latest_nav_date is None or nav.nav_date >= fund.latest_nav_date:
                 if nav.is_money_fund:
                     fund.latest_nav = Decimal("1.0000")
@@ -146,6 +164,40 @@ class NavService:
                     fund.latest_nav = nav.unit_nav
                     fund.nav_change_pct = nav.change_pct
                 fund.latest_nav_date = nav.nav_date
+                self._repair_placeholder_holdings(fund)
+
+    def _repair_placeholder_holdings(self, fund: Fund) -> None:
+        """用有效净值补齐占位名称，并反算遗留零份额持仓。"""
+        holdings = self.db.execute(
+            select(FundHolding).where(
+                FundHolding.fund_code == fund.fund_code,
+                FundHolding.status == 1,
+            )
+        ).scalars().all()
+        if not fund.latest_nav or fund.latest_nav <= 0:
+            return
+
+        for holding in holdings:
+            name = (holding.fund_name or "").strip()
+            if self._is_placeholder_name(name, holding.fund_code):
+                holding.fund_name = fund.fund_name
+
+            # 必须先保存原市值，再根据新净值反算份额，不能被零份额重算覆盖。
+            original_market_value = holding.market_value
+            if holding.shares == 0 and original_market_value and original_market_value > 0:
+                holding.shares = original_market_value / fund.latest_nav
+                holding.market_value = original_market_value
+
+    @staticmethod
+    def _is_placeholder_name(name: str | None, fund_code: str) -> bool:
+        """识别历史导入留下的基金名称占位值。"""
+        value = (name or "").strip()
+        return (
+            not value
+            or value == fund_code
+            or value == f"基金{fund_code}"
+            or value in {"未知基金", "待补全"}
+        )
 
     def _recalculate_market_values(self) -> None:
         """Recalculate market values for all active holdings using latest NAV."""

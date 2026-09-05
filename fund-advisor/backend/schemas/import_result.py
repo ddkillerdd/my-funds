@@ -1,6 +1,6 @@
 """Import result schemas for API response."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import date, datetime
 from typing import Optional
 
@@ -18,7 +18,7 @@ class ImportResult(BaseModel):
     data_date: Optional[date] = None
     status: str = "success"
     error_message: Optional[str] = None
-    changes: list[HoldingChangeResponse] = []
+    changes: list[HoldingChangeResponse] = Field(default_factory=list)
 
 
 class ImportHistoryItem(BaseModel):

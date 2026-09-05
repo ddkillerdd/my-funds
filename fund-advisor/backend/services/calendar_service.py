@@ -1,5 +1,7 @@
 """Calendar service - compute daily portfolio PnL from NAV history."""
 
+from __future__ import annotations
+
 import calendar
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -12,7 +14,6 @@ from sqlalchemy.orm import Session
 from backend.models.holding import FundHolding
 from backend.models.fund import Fund
 from backend.models.nav_history import FundNavHistory
-from backend.models.import_record import ImportRecord
 from backend.models.holding_change import HoldingChange
 from backend.schemas.calendar import (
     CalendarDayData,
@@ -47,12 +48,10 @@ class CalendarService:
         )
 
         # 1. Import timeline & baseline
-        imports = self._load_import_timeline()
-        if not imports:
-            # 无导入记录(手填持仓)时, 降级为按当前持仓份额 + 历史净值现算每日盈亏
-            return self._monthly_pnl_no_import(year, month, month_start, month_end, empty)
-
-        baseline_date = imports[0].data_date
+        changes_map = self._load_all_holding_changes()
+        baseline_date = self._get_historical_baseline_date(changes_map)
+        if baseline_date is None:
+            return empty
 
         # Entire month is before baseline → nothing to show
         if month_end < baseline_date:
@@ -65,11 +64,6 @@ class CalendarService:
         holdings = self.db.query(FundHolding).all()
         if not holdings:
             return empty
-
-        changes_map = self._load_all_holding_changes()
-        shares_timeline = self._reconstruct_shares_timeline(
-            holdings, imports, changes_map
-        )
 
         # 3. Collect all fund codes across every holding
         all_fund_codes = list({h.fund_code for h in holdings})
@@ -102,7 +96,7 @@ class CalendarService:
 
         # 7. Build per-day, per-fund aggregated shares
         daily_shares = self._build_daily_shares_map(
-            holdings, trading_dates, shares_timeline, imports, changes_map
+            holdings, trading_dates, changes_map
         )
 
         # 8. Compute daily PnL
@@ -417,20 +411,19 @@ class CalendarService:
 
     def get_day_detail(self, target_date: date) -> CalendarDayResponse:
         """Return full day detail: summary, per-account assets, trades, per-holding PnL."""
-        imports = self._load_import_timeline()
-        if not imports:
-            # 无导入记录(手填持仓)时: 用当前持仓份额 + 当日净值现算当日详情
-            return self._day_detail_no_import(target_date)
-
-        baseline_date = imports[0].data_date
+        changes_map = self._load_all_holding_changes()
+        baseline_date = self._get_historical_baseline_date(changes_map)
+        if baseline_date is None:
+            return CalendarDayResponse(
+                date=target_date, summary=DayTotalSummary(total_market_value=ZERO),
+                accounts=[], trades=[], holdings=[],
+            )
         if target_date < baseline_date:
             return CalendarDayResponse(
                 date=target_date,
                 summary=DayTotalSummary(total_market_value=ZERO),
                 accounts=[], trades=[], holdings=[],
             )
-
-        changes_map = self._load_all_holding_changes()
 
         # All holdings (including cleared – they may have been active on target_date)
         holdings = self.db.query(FundHolding).all()
@@ -443,10 +436,6 @@ class CalendarService:
 
         # Money fund codes
         money_fund_codes = self._get_money_fund_codes()
-
-        shares_timeline = self._reconstruct_shares_timeline(
-            holdings, imports, changes_map
-        )
 
         fund_codes = list({h.fund_code for h in holdings})
 
@@ -465,7 +454,7 @@ class CalendarService:
         results: list[CalendarDayDetail] = []
         for h in holdings:
             shares = self._get_effective_shares(
-                target_date, h.id, shares_timeline, imports, changes_map
+                target_date, h, changes_map
             )
             if shares <= ZERO:
                 continue
@@ -615,7 +604,7 @@ class CalendarService:
     # ------------------------------------------------------------------
 
     def _load_day_trades(self, target_date: date) -> list[DayTradeItem]:
-        """Load all holding changes whose import data_date == target_date."""
+        """按事件业务日期加载当日全部持仓变动。"""
         rows = (
             self.db.query(
                 HoldingChange.fund_code,
@@ -629,11 +618,11 @@ class CalendarService:
                 HoldingChange.mv_before,
                 HoldingChange.mv_after,
                 FundHolding.fund_account,
+                HoldingChange.source_type,
             )
             .outerjoin(FundHolding, HoldingChange.holding_id == FundHolding.id)
-            .join(ImportRecord, HoldingChange.import_id == ImportRecord.id)
-            .filter(ImportRecord.data_date == target_date)
-            .order_by(HoldingChange.platform, HoldingChange.fund_code)
+            .filter(HoldingChange.business_date == target_date)
+            .order_by(HoldingChange.id)
             .all()
         )
         return [
@@ -649,76 +638,53 @@ class CalendarService:
                 nav_at_change=r.nav_at_change,
                 mv_before=r.mv_before,
                 mv_after=r.mv_after,
+                source_type=r.source_type,
             )
             for r in rows
         ]
 
-    def _load_import_timeline(self) -> list[ImportRecord]:
-        """Load all successful import records ordered by data_date ASC."""
-        return (
-            self.db.query(ImportRecord)
-            .filter(ImportRecord.status == "success")
-            .order_by(ImportRecord.data_date.asc(), ImportRecord.id.asc())
+    def _load_all_holding_changes(self) -> dict[int, list[HoldingChange]]:
+        """按持仓加载全部事件，并以业务日期和 id 稳定排序。"""
+        rows = (
+            self.db.query(HoldingChange)
+            .order_by(HoldingChange.business_date.asc(), HoldingChange.id.asc())
             .all()
         )
+        result: dict[int, list[HoldingChange]] = defaultdict(list)
+        for row in rows:
+            if row.holding_id is not None:
+                result[row.holding_id].append(row)
+        return dict(result)
 
-    def _load_all_holding_changes(self) -> dict[tuple[int, int], HoldingChange]:
-        """Load all holding_changes, keyed by (holding_id, import_id)."""
-        rows = self.db.query(HoldingChange).all()
-        return {(r.holding_id, r.import_id): r for r in rows}
-
-    def _reconstruct_shares_timeline(
-        self,
-        holdings: list[FundHolding],
-        imports: list[ImportRecord],
-        changes_map: dict[tuple[int, int], HoldingChange],
-    ) -> dict[int, dict[int, Decimal]]:
-        """Rebuild shares at each import point for every holding.
-
-        Returns {holding_id: {import_id: shares_at_that_point}}.
-        Walks backwards from current shares, using holding_changes to
-        reverse-apply each modification.
-        """
-        result: dict[int, dict[int, Decimal]] = {}
-
-        for h in holdings:
-            # Cleared holdings (status=0) have 0 shares at the current point.
-            # fund_holdings.shares is NOT zeroed on clear (data bug), so we
-            # override here to prevent ghost positions in historical timelines.
-            if h.status == 0:
-                current = ZERO
-            else:
-                current = h.shares if h.shares is not None else ZERO
-            timeline: dict[int, Decimal] = {}
-
-            # Walk from most-recent import → earliest
-            for imp in reversed(imports):
-                change = changes_map.get((h.id, imp.id))
-                if change is not None:
-                    timeline[imp.id] = (
-                        change.shares_after
-                        if change.shares_after is not None
-                        else ZERO
-                    )
-                    current = (
-                        change.shares_before
-                        if change.shares_before is not None
-                        else ZERO
-                    )
-                else:
-                    timeline[imp.id] = current
-
-            result[h.id] = timeline
-
-        return result
+    def _get_historical_baseline_date(
+        self, changes_map: dict[int, list[HoldingChange]]
+    ) -> date | None:
+        """取得事件与可靠 legacy 持仓共同构成的历史起点。"""
+        candidates = [
+            change.business_date
+            for changes in changes_map.values()
+            for change in changes
+            if change.business_date is not None
+        ]
+        rows = (
+            self.db.query(FundHolding.share_date)
+            .filter(
+                FundHolding.status == 1,
+                FundHolding.source_type == "legacy",
+                FundHolding.share_date.isnot(None),
+                FundHolding.shares.isnot(None),
+                FundHolding.shares > ZERO,
+            )
+            .all()
+        )
+        candidates.extend(row.share_date for row in rows if row.share_date is not None)
+        return min(candidates) if candidates else None
 
     def _get_effective_shares(
         self,
         target_date: date,
-        holding_id: int,
-        shares_timeline: dict[int, dict[int, Decimal]],
-        imports: list[ImportRecord],
-        changes_map: dict[tuple[int, int], HoldingChange],
+        holding: FundHolding,
+        changes_map: dict[int, list[HoldingChange]],
     ) -> Decimal:
         """Get effective shares for a holding on a given date.
 
@@ -727,63 +693,24 @@ class CalendarService:
         - Transition day (non-first import date with changes) → adjusted shares
         - Normal day → timeline shares from the applicable import
         """
-        if not imports:
-            return ZERO
-
-        baseline_date = imports[0].data_date
-        if target_date < baseline_date:
-            return ZERO
-
-        # Find applicable import: latest with data_date <= target_date
-        applicable_import = None
-        for imp in imports:
-            if imp.data_date <= target_date:
-                applicable_import = imp
-            else:
-                break
-
-        if applicable_import is None:
-            return ZERO
-
-        timeline = shares_timeline.get(holding_id, {})
-        base_shares = timeline.get(applicable_import.id, ZERO)
-
-        # Transition day: target equals a non-first import's data_date
+        events = changes_map.get(holding.id, [])
+        applicable = [event for event in events if event.business_date <= target_date]
+        if applicable:
+            return Decimal(applicable[-1].shares_after or ZERO)
         if (
-            target_date == applicable_import.data_date
-            and applicable_import.id != imports[0].id
+            getattr(holding, "source_type", "legacy") == "legacy"
+            and holding.status == 1
+            and holding.share_date is not None
+            and holding.share_date <= target_date
         ):
-            change = changes_map.get((holding_id, applicable_import.id))
-            if change is not None:
-                before = (
-                    change.shares_before
-                    if change.shares_before is not None
-                    else ZERO
-                )
-                after = (
-                    change.shares_after
-                    if change.shares_after is not None
-                    else ZERO
-                )
-                ct = change.change_type
-                if ct == "new":
-                    return after
-                elif ct == "clear":
-                    return ZERO
-                elif ct == "increase":
-                    return after
-                elif ct == "decrease":
-                    return after  # min(before, after)
-
-        return base_shares
+            return Decimal(holding.shares or ZERO)
+        return ZERO
 
     def _build_daily_shares_map(
         self,
         holdings: list[FundHolding],
         trading_dates: list[date],
-        shares_timeline: dict[int, dict[int, Decimal]],
-        imports: list[ImportRecord],
-        changes_map: dict[tuple[int, int], HoldingChange],
+        changes_map: dict[int, list[HoldingChange]],
     ) -> dict[date, dict[str, Decimal]]:
         """Build {date: {fund_code: aggregated_shares}} for each trading date."""
         result: dict[date, dict[str, Decimal]] = {}
@@ -792,7 +719,7 @@ class CalendarService:
             fund_shares: dict[str, Decimal] = defaultdict(lambda: ZERO)
             for h in holdings:
                 shares = self._get_effective_shares(
-                    td, h.id, shares_timeline, imports, changes_map
+                    td, h, changes_map
                 )
                 if shares > ZERO:
                     fund_shares[h.fund_code] += shares
@@ -968,21 +895,16 @@ class CalendarService:
     def _get_import_navs_for_date(
         self, fund_codes: list[str], target_date: date
     ) -> dict[str, Decimal]:
-        """Get nav_at_change from holding_changes for imports whose data_date == target_date.
-
-        This uses the Excel-imported NAV as the source of truth for import dates.
-        Only returns values when there's an explicit change record (new/increase/decrease).
-        Excludes 'clear' type changes (where holdings were sold off).
-        """
+        """按事件业务日期取得当日有效变动净值。"""
         rows = (
             self.db.query(HoldingChange.fund_code, HoldingChange.nav_at_change)
-            .join(ImportRecord, HoldingChange.import_id == ImportRecord.id)
             .filter(
-                ImportRecord.data_date == target_date,
+                HoldingChange.business_date == target_date,
                 HoldingChange.fund_code.in_(fund_codes),
                 HoldingChange.nav_at_change.isnot(None),
                 HoldingChange.change_type != "clear",
             )
+            .order_by(HoldingChange.id)
             .all()
         )
         # If multiple changes for same fund (unlikely), take the last one
@@ -1079,11 +1001,10 @@ class CalendarService:
     ) -> set[date]:
         """Query dates in the month where non-money-fund holdings had share changes."""
         query = (
-            self.db.query(ImportRecord.data_date)
-            .join(HoldingChange, HoldingChange.import_id == ImportRecord.id)
+            self.db.query(HoldingChange.business_date)
             .filter(
-                ImportRecord.data_date >= month_start,
-                ImportRecord.data_date <= month_end,
+                HoldingChange.business_date >= month_start,
+                HoldingChange.business_date <= month_end,
                 HoldingChange.change_type.in_(["new", "increase", "decrease", "clear"]),
             )
         )
@@ -1092,4 +1013,4 @@ class CalendarService:
                 ~HoldingChange.fund_code.in_(money_fund_codes)
             )
         rows = query.distinct().all()
-        return {r.data_date for r in rows}
+        return {r.business_date for r in rows}

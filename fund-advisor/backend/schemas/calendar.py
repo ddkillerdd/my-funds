@@ -70,6 +70,7 @@ class DayTradeItem(BaseModel):
     nav_at_change: Optional[Decimal] = None
     mv_before: Optional[Decimal] = None
     mv_after: Optional[Decimal] = None
+    source_type: Optional[str] = None
 
 
 class CalendarDayResponse(BaseModel):
