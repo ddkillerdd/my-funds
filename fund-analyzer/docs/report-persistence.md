@@ -17,7 +17,7 @@ AI 投资顾问页面的分析报告刷新后不再丢失，用户可以随时�
 | model_used | varchar(128) | 生成所用模型 |
 | created_at | datetime | 生成时间 |
 
-表由 `Base.metadata.create_all()` 自动创建，无需手动 migration。
+表结构由 Alembic 迁移创建，应用启动不会隐式修改数据库 schema。
 
 ### 2. API 端点
 

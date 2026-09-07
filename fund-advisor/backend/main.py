@@ -10,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_settings
-from backend.database import engine, Base
 from backend.api.router import api_router
 from backend.scheduler.jobs import setup_scheduler, job_startup_nav_check
 
@@ -28,8 +27,8 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """管理应用启动和关闭，并允许本地环境禁用后台任务。"""
     # Startup
-    logger.info("Creating database tables...")
-    Base.metadata.create_all(bind=engine)
+    # 数据库结构由 Alembic 在应用启动前管理，启动过程不再隐式修改 schema。
+    logger.info("Database schema is managed by Alembic; skipping implicit table creation")
 
     # Ensure upload directory exists
     Path("data/uploads").mkdir(parents=True, exist_ok=True)

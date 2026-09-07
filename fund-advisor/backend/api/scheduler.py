@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.models.email_send_record import EmailSendRecord  # noqa: F401  (register table for create_all)
+from backend.models.email_send_record import EmailSendRecord  # noqa: F401  (注册模型供 Alembic 使用)
 
 router = APIRouter()
 

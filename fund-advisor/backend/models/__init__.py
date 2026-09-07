@@ -1,6 +1,4 @@
-"""Model registry — importing this package registers all models on Base.metadata
-so `Base.metadata.create_all()` creates every table (incl. RFC-012 backtest tables).
-"""
+"""模型注册表：导入本包会把全部模型注册到 Base.metadata，供 Alembic 使用。"""
 
 from backend.models.advice_snapshot import AdviceSnapshot  # noqa: F401
 from backend.models.factor_hit_rate import FactorHitRate  # noqa: F401

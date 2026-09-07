@@ -21,13 +21,7 @@ config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
 
 # Import all models for autogenerate support
 from backend.database import Base
-from backend.models.fund import Fund
-from backend.models.holding import FundHolding
-from backend.models.nav_history import FundNavHistory
-from backend.models.portfolio_snapshot import PortfolioSnapshot
-from backend.models.import_record import ImportRecord
-from backend.models.holding_change import HoldingChange
-from backend.models.holding_daily_pnl import HoldingDailyPnL
+import backend.models  # noqa: F401  # 注册全部 ORM 模型供迁移检查使用
 
 target_metadata = Base.metadata
 
