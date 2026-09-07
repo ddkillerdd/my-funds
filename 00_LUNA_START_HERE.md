@@ -1,9 +1,20 @@
 # Luna 从这里开始
 
-> 更新日期：2026-09-05
-> 当前任务：阶段 A、B1、B2、C、D 已收口；四组本地提交已完成，下一步等待独立 GitHub 推送确认，不部署。
+> 更新日期：2026-09-06
+> 当前任务：快捷导入首次预览响应式收口及 TEMP gate1 构建验证已完成；不提交、不推送、不部署。
 
-## 0. 2026-09-05 当前权威增量
+## 0. 2026-09-06 最新当前状态（优先于下文）
+
+- 当前本地分支：`codex/holding-ingestion-correctness`；`HEAD` 为 `70a069a3b542e3e34e867c9e3212cb3b12ad6806`；暂存区为空。
+- 当前工作区共有 9 个差异文件：四个前端文件、三份交接文档和两个既有受保护测试文件；本轮未编辑、未还原、未暂存或提交受保护文件。
+- 快捷导入首次预览已修复为把 `ref` 数组取出的 Vue proxy 行传入异步预览；取消、删除、清空、卸载和旧请求不覆盖重试的逻辑保持有效。
+- 实际 ImportView 脚本 harness 与 Node UI 回归为 11/11 通过；旧 raw-row 内存版本在同一观察断言下失败；`git diff --check`、白名单和敏感信息扫描通过；保护文件哈希保持基线。
+- 已在 `C:\Users\qwq\AppData\Local\Temp\myfund11111-frontend-build-20260906-gate1` 按原 `package-lock.json` 完成隔离 `npm ci --ignore-scripts --no-audit --no-fund`、11/11 测试和 `npm run build`；Vite 6.4.1 构建退出码 0，输出 `C:\Users\qwq\AppData\Local\Temp\myfund11111-frontend-build-20260906-gate1\dist\index.html`，仅有大于 500 kB chunk 警告。TEMP 快照源码、`package.json` 和 lockfile 哈希均与原仓库一致。
+- 后续服务器交接由 OpenClaw 按独立确认门承担；本阶段未授权服务器、OpenClaw、GitHub、数据库或生产写操作。
+
+下方 2026-09-05 及更早段落保留为历史证据，不作为本轮实时基线。
+
+## 0.1 2026-09-05 历史权威增量
 
 本节取代下文旧的“当前基线”和“下一任务”描述；下文保留为历史交接证据。
 

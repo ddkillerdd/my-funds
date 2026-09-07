@@ -36,6 +36,24 @@ export function hasLoadingPreview(records) {
   return records.some((record) => record._status === 'loading')
 }
 
+/** 定义快捷导入预览使用的独立短超时时间。 */
+export const QUICK_PREVIEW_TIMEOUT_MS = 15000
+
+/** 判断快捷导入预览请求是否因主动取消而结束。 */
+export function isPreviewCanceled(error, signal) {
+  return Boolean(signal?.aborted || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError')
+}
+
+/** 将快捷导入预览超时和普通错误收口为用户可读中文。 */
+export function previewErrorMessage(error) {
+  const code = error?.code
+  const message = String(error?.message ?? '')
+  if (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || /timeout/i.test(message)) {
+    return '基金信息获取超时，请重新获取'
+  }
+  return error?.response?.data?.detail || error?.response?.data?.message || error?.message || '基金信息获取失败'
+}
+
 /** 部分成功时只移除成功身份，保留失败项及后端错误。 */
 export function retainPartialQuickRecords(records, result) {
   const errors = Array.isArray(result?.errors) ? result.errors : []

@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { isPreviewCanceled, previewErrorMessage, QUICK_PREVIEW_TIMEOUT_MS } from '../utils/holdingImport.js'
 
 const api = axios.create({
   baseURL: '/api',
@@ -13,11 +14,13 @@ const api = axios.create({
 api.interceptors.response.use(
   (response) => response.data,
   (error) => {
-    const message =
-      error.response?.data?.detail ||
-      error.response?.data?.message ||
-      error.message ||
-      '请求失败，请稍后重试'
+    // 请求被主动取消时不弹出全局错误，交由调用方决定界面状态。
+    if (isPreviewCanceled(error, error.config?.signal)) {
+      return Promise.reject(error)
+    }
+    const message = error.config?.url === '/holdings/simple-import/preview'
+      ? previewErrorMessage(error)
+      : error.response?.data?.detail || error.response?.data?.message || error.message || '请求失败，请稍后重试'
     ElMessage.error(message)
     return Promise.reject(error)
   }
@@ -161,8 +164,9 @@ export function simpleImport(records) {
   return api.post('/holdings/simple-import', { records })
 }
 
-export function previewSimpleImport(record) {
-  return api.post('/holdings/simple-import/preview', record)
+// 以独立短超时请求快捷导入预览，并允许调用方取消请求。
+export function previewSimpleImport(record, signal) {
+  return api.post('/holdings/simple-import/preview', record, { timeout: QUICK_PREVIEW_TIMEOUT_MS, signal })
 }
 
 export function getOperationHistory(limit = 100) {

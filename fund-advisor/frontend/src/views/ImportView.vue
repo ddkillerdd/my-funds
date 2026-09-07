@@ -68,9 +68,10 @@
           <el-table-column label="净值日期" width="120">
             <template #default="{ row }">{{ row.latest_nav_date || '--' }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="60" align="center">
-            <template #default="{ $index }">
-              <el-button type="danger" :icon="Delete" size="small" link @click="quickRecords.splice($index, 1)" />
+          <el-table-column label="操作" width="130" align="center">
+            <template #default="{ row, $index }">
+              <el-button v-if="row._status === 'error'" type="primary" size="small" link @click="retryQuickRecord(row)">重新获取</el-button>
+              <el-button type="danger" :icon="Delete" size="small" link @click="removeQuickRecord(row, $index)" />
             </template>
           </el-table-column>
           <el-table-column label="状态" min-width="160">
@@ -92,7 +93,7 @@
           >
             批量导入 ({{ quickRecords.length }} 条)
           </el-button>
-          <el-button @click="quickRecords = []">清空列表</el-button>
+          <el-button @click="clearQuickRecords">清空列表</el-button>
         </div>
       </div>
     </el-card>
@@ -258,11 +259,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { UploadFilled, Upload, Delete, Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { uploadExcel, getImportHistory, getImportChanges, simpleImport, previewSimpleImport, getOperationHistory } from '../api/index.js'
-import { validateQuickRecord, quickRecordKey, retainPartialQuickRecords, labelHoldingValue, validateHoldingFile, hasLoadingPreview as hasLoadingPreviewRows, localDateString } from '../utils/holdingImport.js'
+import { validateQuickRecord, quickRecordKey, retainPartialQuickRecords, labelHoldingValue, validateHoldingFile, hasLoadingPreview as hasLoadingPreviewRows, localDateString, isPreviewCanceled, previewErrorMessage } from '../utils/holdingImport.js'
 
 const uploadRef = ref(null)
 const selectedFile = ref(null)
@@ -281,6 +282,8 @@ const quickImporting = ref(false)
 const quickPlatform = ref('支付宝')
 const quickShareDate = ref(localDateString())
 const hasLoadingPreview = computed(() => hasLoadingPreviewRows(quickRecords.value))
+const quickPreviewControllers = new Map()
+let quickImportUnmounted = false
 
 const changesDialogVisible = ref(false)
 const changesData = ref([])
@@ -355,6 +358,73 @@ function handleExceed() {
 
 // ---- Quick Import (RFC-002) ----
 
+// 取消指定快捷导入行的预览请求，避免删除后迟到响应回写页面。
+function cancelQuickPreview(row) {
+  const key = quickRecordKey(row)
+  const controller = quickPreviewControllers.get(key)
+  if (!controller) return
+  controller.abort()
+  if (quickPreviewControllers.get(key) === controller) quickPreviewControllers.delete(key)
+}
+
+// 按同一流程重新获取快捷导入行的基金信息。
+async function previewQuickRecord(row) {
+  const key = quickRecordKey(row)
+  cancelQuickPreview(row)
+  const controller = new AbortController()
+  quickPreviewControllers.set(key, controller)
+  row._status = 'loading'
+  row._error = ''
+  try {
+    const preview = await previewSimpleImport({
+      fund_code: row.fund_code,
+      market_value: row.market_value,
+      platform: row.platform,
+      share_date: row.share_date,
+    }, controller.signal)
+    if (isPreviewCanceled(null, controller.signal) || quickImportUnmounted || !quickRecords.value.includes(row)) return
+    Object.assign(row, {
+      _resolved_name: preview.fund_name,
+      _shares_hint: preview.estimated_shares,
+      latest_nav: preview.latest_nav,
+      latest_nav_date: preview.latest_nav_date,
+      _status: 'ready',
+      _error: '',
+    })
+  } catch (error) {
+    if (isPreviewCanceled(error, controller.signal) || quickImportUnmounted || !quickRecords.value.includes(row)) return
+    row._status = 'error'
+    row._error = previewErrorMessage(error)
+  } finally {
+    if (quickPreviewControllers.get(key) === controller) quickPreviewControllers.delete(key)
+  }
+}
+
+// 删除快捷导入行并取消该行尚未完成的预览请求。
+function removeQuickRecord(row, index) {
+  cancelQuickPreview(row)
+  if (quickRecords.value[index] === row) quickRecords.value.splice(index, 1)
+}
+
+// 清空快捷导入列表并取消全部预览请求。
+function clearQuickRecords() {
+  quickPreviewControllers.forEach((controller) => controller.abort())
+  quickPreviewControllers.clear()
+  quickRecords.value = []
+}
+
+// 组件卸载时取消所有预览，防止迟到响应写入已离开的页面。
+onBeforeUnmount(() => {
+  quickImportUnmounted = true
+  quickPreviewControllers.forEach((controller) => controller.abort())
+  quickPreviewControllers.clear()
+})
+
+// 重新获取失败行的预览信息。
+function retryQuickRecord(row) {
+  if (!quickImportUnmounted && quickRecords.value.includes(row)) previewQuickRecord(row)
+}
+
 async function addQuickRecord() {
   const checked = validateQuickRecord({ fund_code: quickFundCode.value, market_value: quickAmount.value, platform: quickPlatform.value, share_date: quickShareDate.value })
   if (!checked.ok) {
@@ -375,14 +445,8 @@ async function addQuickRecord() {
   quickRecords.value.push(row)
   quickFundCode.value = ''
   quickAmount.value = ''
-  try {
-    const preview = await previewSimpleImport(checked.value)
-    Object.assign(row, { _resolved_name: preview.fund_name, _shares_hint: preview.estimated_shares, latest_nav: preview.latest_nav, latest_nav_date: preview.latest_nav_date, _status: 'ready' })
-  } catch (error) {
-    row._status = 'error'
-    row._error = error?.response?.data?.detail || '基金信息获取失败'
-  } finally {
-  }
+  // 从响应式数组取回 proxy 行，确保异步预览状态更新能触发界面刷新。
+  await previewQuickRecord(quickRecords.value[quickRecords.value.length - 1])
 }
 
 async function handleQuickImport() {

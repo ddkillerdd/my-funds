@@ -3,7 +3,17 @@
 > 日期：2026-09-05
 > 状态：待执行本地只读/文档收口；提交、推送和服务器 staging 均设独立确认门
 
-## 1. 当前结论
+## 0. 2026-09-06 最新状态（优先于下文）
+
+- 本地分支：`codex/holding-ingestion-correctness`；`HEAD`：`70a069a3b542e3e34e867c9e3212cb3b12ad6806`；暂存区为空。
+- 最新四文件快捷预览修复已完成：首次预览使用 `ref` 数组中的 Vue proxy 行，避免 raw row 异步写入绕过界面响应式更新。
+- 真实 ImportView 脚本 harness 与 Node UI 回归测试为 11/11 通过；覆盖首次成功、首次超时后的 `loading` 收口、删除、清空、取消及旧请求重试保护；raw-row 内存旧版本在同一观察断言下失败。
+- 已在隔离 TEMP 快照 `C:\Users\qwq\AppData\Local\Temp\myfund11111-frontend-build-20260906-gate1` 按原锁文件完成 `npm ci --ignore-scripts --no-audit --no-fund`、11/11 测试和 `npm run build`；Vite 6.4.1、2103 个模块、退出码 0，输出 `C:\Users\qwq\AppData\Local\Temp\myfund11111-frontend-build-20260906-gate1\dist\index.html`，仅有大于 500 kB chunk 警告。源码与 lockfile 哈希和原仓库一致，未改变原依赖目录。
+- 四个前端文件待提交；两个受保护文件仍原样保留。后续服务器交接由 OpenClaw 承担，但尚未授权服务器或 OpenClaw 写操作。
+
+下方 2026-09-05 内容保留为历史证据，不能覆盖上述最新状态。
+
+## 1.1 2026-09-05 历史结论
 
 阶段 A 至 D 已完成代码级验收：
 

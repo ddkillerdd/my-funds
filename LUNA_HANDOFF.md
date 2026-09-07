@@ -1,9 +1,19 @@
 # Luna 开发接手入口
 
-> 交接日期：2026-09-05
-> 交接目标：阶段 A、B1、B2、C、D 已收口；下一任务按 `13_LUNA_HOLDING_CORRECTNESS_FINAL_GATE.md` 完成文档和提交前验证，未确认前不提交、推送或部署。
+> 交接日期：2026-09-06
+> 交接目标：快捷导入首次预览响应式收口及 TEMP gate1 构建验证已完成；未确认前不提交、推送或部署。
 
-## 0. 2026-09-05 当前权威交接
+## 0. 2026-09-06 最新当前交接（优先于下文）
+
+- 本地分支：`codex/holding-ingestion-correctness`；`HEAD`：`70a069a3b542e3e34e867c9e3212cb3b12ad6806`；暂存区为空。
+- 当前差异为四个前端文件、三份交接文档加两个既有受保护测试文件，共 9 个；保护文件未编辑、未还原、未暂存或提交，哈希保持既定基线。
+- `ImportView.vue` 首次预览现在使用 `ref` 数组中的 Vue proxy 行；真实 ImportView 脚本 harness 与 Node 回归 11/11 通过，覆盖首次成功、首次超时后的 `loading` 收口，以及删除、清空、取消和旧请求不覆盖重试。将首次调用恢复为 raw row 的内存旧版本在同一观察断言下失败。
+- 已在 `C:\Users\qwq\AppData\Local\Temp\myfund11111-frontend-build-20260906-gate1` 隔离执行 `npm ci --ignore-scripts --no-audit --no-fund --cache C:\Users\qwq\AppData\Local\Temp\myfund11111-frontend-build-20260906-gate1\npm-cache`、11/11 测试和 `npm run build`，均退出码 0；Vite 6.4.1 转换 2103 个模块，输出 `C:\Users\qwq\AppData\Local\Temp\myfund11111-frontend-build-20260906-gate1\dist\index.html`，仅有大于 500 kB chunk 警告。TEMP 快照源码、`package.json` 和 lockfile 哈希与原仓库一致，原仓库依赖目录未改。
+- 后续服务器交接交由 OpenClaw，但本阶段未授权任何服务器、OpenClaw、GitHub、数据库或生产写操作。
+
+以下旧章节保留为历史证据；发生冲突时以上述 2026-09-06 状态和实时 Git 检查为准。
+
+## 0.1 2026-09-05 历史权威交接
 
 本节取代下文旧的“当前状态”和“下一阶段任务”；旧内容只作历史证据。
 
