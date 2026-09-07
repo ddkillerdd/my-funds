@@ -206,5 +206,5 @@ def test_screen_empty_candidates():
 def test_base_weights_loaded():
     assert abs(sum(BASE_FACTOR_WEIGHTS.values()) - 1.0) < 0.01
     assert set(BASE_FACTOR_WEIGHTS) == {
-        "momentum", "quality", "drawdown", "diversify", "size", "valuation",
+        "momentum", "quality", "drawdown", "diversify", "size", "valuation", "timing",
     }
