@@ -537,7 +537,8 @@ def build_position_action(qi, regime: str, current_weight: float,
     # 绝对操作金额: current = 真实现有持仓; target 由组合级分配器在 analyzer 层统一重算
     target_amount = total_mv * target if total_mv > 0 else None
     change_amount = total_mv * (target - current_weight) if total_mv > 0 else None
-    current_amount = target_amount * current_weight if total_mv > 0 else None
+    # 未提供真实现值时，兼容旧调用方按组合基准和当前权重估算当前金额。
+    current_amount = total_mv * current_weight if total_mv > 0 else None
     if current_mv > 0:
         # RFC-021: current_amount 应反映该基金真实现有市值, 而非“基准×权重”
         current_amount = current_mv
