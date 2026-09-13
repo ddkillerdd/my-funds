@@ -63,6 +63,9 @@ from engine.models import (
     SimDaySnapshot,
     BacktestWindow,
     BacktestReport,
+    EXECUTION_SCOPE,
+    EXECUTION_ASSUMPTION,
+    EXECUTION_DISCLAIMER,
 )
 from engine.quant import compute_all
 from engine.decision import (
@@ -210,6 +213,35 @@ def _resolve_target_weights(
     return resolved
 
 
+# 校验并规范化用户提供的初始权重。
+def _validate_initial_weights(
+    codes: List[str],
+    initial_weights: Optional[Dict[str, float]],
+) -> Optional[Dict[str, float]]:
+    """校验初始权重必须覆盖全部基金且合计不超过100%。"""
+    if initial_weights is None:
+        return None
+
+    expected_codes = set(codes)
+    actual_codes = set(initial_weights)
+    if actual_codes != expected_codes:
+        raise ValueError("initial_weights 必须与基金代码集合完全一致")
+
+    normalized: Dict[str, float] = {}
+    for code in codes:
+        try:
+            weight = float(initial_weights[code])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"基金 {code} 的初始权重不是有效数字") from exc
+        if not math.isfinite(weight) or weight < 0.0 or weight > 1.0:
+            raise ValueError(f"基金 {code} 的初始权重必须在0到1之间")
+        normalized[code] = weight
+
+    if sum(normalized.values()) > 1.0 + 1e-9:
+        raise ValueError("初始权重合计超过100%")
+    return normalized
+
+
 # =====================================================================
 #  主入口
 # =====================================================================
@@ -223,6 +255,7 @@ def simulate_portfolio(
     friction_band_pp: float = 5.0,
     strategy: Optional[Callable] = None,
     executor: Optional[Callable] = None,
+    initial_weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, SimWindowResult]:
     """对给定基金组合做多窗口点内策略回放。
 
@@ -231,7 +264,8 @@ def simulate_portfolio(
             {"code": "000311", "name": "...", "nav_history": [NavPoint,...](时间升序)},
             ...
         ]
-        initial_amount: 初始总资金(元), 默认 200 = 模拟 50x4。等权分配到各基金。
+        initial_amount: 初始总资金(元), 默认 200 = 模拟 50x4。
+        initial_weights: 可选的基金初始权重映射; 未提供时保持历史等权行为。
         windows: 回放窗口天数列表, 如 [30, 90, 365]。取每只基金历史的最新 N 天回放。
         warmup: 信号回看天数(默认252交易日)。不足 warmup 的日期不产生信号(跳过)。
         target_vol: 波动率目标(默认0.15 -> L2 仓位)。
@@ -252,6 +286,7 @@ def simulate_portfolio(
     # 同一基金用同一份历史; 找出公共可回放的天数(所有基金都有数据)
     histories = {f["code"]: f["nav_history"] for f in funds}
     codes = list(histories.keys())
+    initial_weights = _validate_initial_weights(codes, initial_weights)
 
     # 每只基金按其自身历史长度独立回放? —— 为公平对比, 用"最短共同起点"
     # 简化: 对每个 window, 取"全部基金都至少有这些完整数据"的最近 window 天。
@@ -264,12 +299,14 @@ def simulate_portfolio(
             warmup=warmup, target_vol=target_vol,
             friction_band_pp=friction_band_pp,
             strategy=strategy, executor=executor,
+            initial_weights=initial_weights,
         )
     return out
 
 
 def _simulate_window(codes, histories, window_days, initial_amount,
-                     warmup, target_vol, friction_band_pp, strategy, executor) -> SimWindowResult:
+                     warmup, target_vol, friction_band_pp, strategy, executor,
+                     initial_weights=None) -> SimWindowResult:
     """回放单个窗口。
 
     正确性设计:
@@ -301,17 +338,23 @@ def _simulate_window(codes, histories, window_days, initial_amount,
     # lkv[c][d] = calendar 上 d 当日或之前最近已知净值(缺失日 carry-forward)
     lkv = _build_last_known_value(full_by_code, calendar=dates)
 
-    # 初始等权建仓(用窗口首日最近已知净值)
+    # 初始建仓(用窗口首日最近已知净值), 缺首日净值的金额继续留在现金。
     nfunds = len(codes)
-    per_fund = initial_amount / nfunds
     shares = {}
     first_nav = {}
     d0 = dates[0]
     for c in codes:
+        allocation = (
+            initial_amount / nfunds
+            if initial_weights is None
+            else initial_amount * initial_weights[c]
+        )
         fn = lkv[c].get(d0)
         first_nav[c] = fn
-        shares[c] = per_fund / fn if fn and fn > 0 else 0.0
-    cash = initial_amount - sum(shares[c] * (first_nav[c] or 0) for c in codes)
+        shares[c] = allocation / fn if fn and fn > 0 else 0.0
+    invested = sum(shares[c] * (first_nav[c] or 0) for c in codes)
+    cash = initial_amount - invested
+    initial_cash = cash
     buy_hold_values = {c: shares[c] for c in codes}   # 基准份额不随调仓变
 
     daily = []
@@ -396,11 +439,16 @@ def _simulate_window(codes, histories, window_days, initial_amount,
     strategy_ret = (final_res.total_value / start_val - 1) * 100 if start_val else 0.0
 
     d_last = dates[-1]
-    bh_final = sum(buy_hold_values[c] * nav_of(c, d_last) for c in codes)
+    bh_final = initial_cash + sum(
+        buy_hold_values[c] * nav_of(c, d_last) for c in codes
+    )
     bh_ret = (bh_final / start_val - 1) * 100 if start_val else 0.0
 
     max_dd = _max_drawdown([r.total_value for r in daily])
-    bh_series = [sum(buy_hold_values[c] * nav_of(c, d) for c in codes) for d in dates]
+    bh_series = [
+        initial_cash + sum(buy_hold_values[c] * nav_of(c, d) for c in codes)
+        for d in dates
+    ]
     bh_max_dd = _max_drawdown(bh_series)
 
     final_weights = {}
@@ -580,6 +628,7 @@ class Simulator:
         friction_band_pp: float = 5.0,
         strategy: Optional[Callable] = None,
         executor: Optional[Callable] = None,
+        initial_weights: Optional[Dict[str, float]] = None,
     ):
         self.initial_amount = initial_amount
         self.windows = windows or [30, 90, 365]
@@ -588,6 +637,9 @@ class Simulator:
         self.friction_band_pp = friction_band_pp
         self.strategy = strategy
         self.executor = executor
+        self.initial_weights = (
+            dict(initial_weights) if initial_weights is not None else None
+        )
 
     def simulate(self, funds: List[dict]) -> BacktestReport:
         """对给定基金组合做多窗口点内策略回放, 返回 BacktestReport。"""
@@ -602,6 +654,7 @@ class Simulator:
             friction_band_pp=self.friction_band_pp,
             strategy=self.strategy,
             executor=self.executor,
+            initial_weights=self.initial_weights,
         )
         windows = {
             wd: _to_public_result(win, self.initial_amount)
@@ -610,7 +663,11 @@ class Simulator:
         # summary: 多窗口超额
         excesses = [w.excess_return_pct for w in windows.values()]
         nfunds = len(funds)
-        initial_w = {f["code"]: round(1.0 / nfunds, 4) for f in funds} if nfunds else {}
+        initial_w = (
+            dict(self.initial_weights)
+            if self.initial_weights is not None
+            else ({f["code"]: round(1.0 / nfunds, 4) for f in funds} if nfunds else {})
+        )
         report = BacktestReport(
             generated_at=__import__("datetime").datetime.now().isoformat(timespec="seconds"),
             duration_seconds=round(time.time() - t0, 2),
@@ -625,6 +682,13 @@ class Simulator:
                 "avg_excess_pct": round(sum(excesses) / len(excesses), 2) if excesses else 0.0,
                 "windows": self.windows,
             },
+            execution_scope=EXECUTION_SCOPE,
+            execution_assumption=EXECUTION_ASSUMPTION,
+            real_trade_ready=False,
+            fees_included=False,
+            settlement_delay_included=False,
+            cash_locking_included=False,
+            disclaimer=EXECUTION_DISCLAIMER,
         )
         return report
 
@@ -638,6 +702,7 @@ def simulate(
     friction_band_pp: float = 5.0,
     strategy: Optional[Callable] = None,
     executor: Optional[Callable] = None,
+    initial_weights: Optional[Dict[str, float]] = None,
 ) -> BacktestReport:
     """便捷入口: 一行跑回测。与分析模块 analyze() 对齐。
 
@@ -649,6 +714,7 @@ def simulate(
         target_vol: 波动率目标
         friction_band_pp: 换手触发带
         strategy / executor: 可注入覆写
+        initial_weights: 可选的基金初始权重映射
 
     Returns:
         BacktestReport(含多窗口详细结果与 summary)
@@ -661,4 +727,5 @@ def simulate(
         friction_band_pp=friction_band_pp,
         strategy=strategy,
         executor=executor,
+        initial_weights=initial_weights,
     ).simulate(funds)

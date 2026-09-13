@@ -5,7 +5,7 @@ DB, cron and report hooks:
 
   - record_advice(report)   : called after a report is generated -> write snapshots
   - validate_due()          : daily job -> validate pending snapshots past T+N days
-  - refresh_hit_rates()     : 10-day adaptation -> recompute factor/action hit rates
+  - refresh_hit_rates()     : recent-N validated samples -> recompute hit rates
   - get_stats()             : report/API -> aggregate hit rates
   - get_feedback()          : next analysis -> confidence/view calibration hints
 """
@@ -179,34 +179,53 @@ class BacktestService:
         ).scalar_one_or_none()
         return row.unit_nav if row else None
 
-    # ---------------- refresh hit rates (10-day adaptation) ----------------
+    # ---------------- refresh hit rates (recent-N validated samples) ----------------
 
     def refresh_hit_rates(self, rolling_window: int = 20) -> int:
-        """Recompute per factor/action hit-rates from validated advices (RFC-012 §6).
+        """按每个统计桶最近 N 条已验证建议重新计算命中率（RFC-012 §6）。
 
-        Runs on the 10-day adaptation (and manually). factor_key is derived per-row;
-        since a snapshot may carry a hint, we bucket by action type and by a simple
-        factor label emitted at record time. For now we key by action type.
+        factor_key is derived per-row; since a snapshot may carry a hint, we bucket
+        by action type and by a simple factor label emitted at record time. For now
+        we key by action type.
         """
+        # 在任何数据库操作前校验滚动窗口，避免无效参数产生副作用。
+        if (
+            isinstance(rolling_window, bool)
+            or not isinstance(rolling_window, int)
+            or rolling_window <= 0
+        ):
+            raise ValueError("rolling_window must be a positive integer")
+
         # We bucket primarily by action_type; factor dimension is filled from a
         # per-report 'emphasis_factor' field if present in fund_code? No — keep simple:
         # bucket by action, and also by a pseudo-factor 'all' for the overall rate.
         validated_rows = self.db.execute(
             select(AdviceSnapshot).where(AdviceSnapshot.status == "validated")
         ).scalars().all()
+        validated_rows = sorted(
+            validated_rows,
+            key=lambda row: (row.advice_date, row.id),
+            reverse=True,
+        )
 
-        buckets: dict[tuple[str, str], list[str]] = {}
+        buckets: dict[tuple[str, str], list[AdviceSnapshot]] = {}
         for r in validated_rows:
             key = (normalize_action_name(r.action), "action")
-            buckets.setdefault(key, []).append(r.verdict or "neutral")
+            buckets.setdefault(key, []).append(r)
             # overall bucket
-            buckets.setdefault(("all", "overall"), []).append(r.verdict or "neutral")
+            buckets.setdefault(("all", "overall"), []).append(r)
 
         from engine.backtest import summarize
 
         updated = 0
-        for (factor_key, action_type), verdicts in buckets.items():
-            s = summarize([type("V", (), {"verdict": v}) for v in verdicts])
+        for (factor_key, action_type), bucket_rows in buckets.items():
+            recent_rows = bucket_rows[:rolling_window]
+            s = summarize(
+                [
+                    type("V", (), {"verdict": row.verdict or "neutral"})
+                    for row in recent_rows
+                ]
+            )
             hr = s["hit_rate"]
             row = self.db.execute(
                 select(FactorHitRate).where(

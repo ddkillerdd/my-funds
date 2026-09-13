@@ -1,10 +1,10 @@
-"""SimulatorService — 组合策略回测"盈利能力分析+优化建议"(RFC-016).
+"""SimulatorService — 组合策略理想化信号回放服务 (RFC-016).
 
 职责:
   1. 桥接 fund-analyzer 的 Simulator(纯引擎, 零 LLM)
   2. 支持用户自定义基金 + 初始成本(金额)
   3. 把引擎输出的每窗口每日净值, 加工成"每日盈亏曲线"(供前端直观展示)
-  4. 以"盈利"为核心: 多窗口超额判定盈利能力 -> 生成可执行的优化建议
+   4. 输出理想化回放边界，参数观察仅用于下一轮模拟研究
 
 设计原则:
   - 引擎只做"回放", 本服务做"盈利解读 + 建议"(与 AdvisorService 对引擎的解读角色一致)
@@ -26,12 +26,40 @@ logger = logging.getLogger(__name__)
 ensure_engine_path()
 
 from engine.simulator import Simulator  # noqa: E402
-from engine.models import NavPoint  # noqa: E402
+from engine.models import (  # noqa: E402
+    EXECUTION_ASSUMPTION,
+    EXECUTION_DISCLAIMER,
+    EXECUTION_SCOPE,
+    NavPoint,
+)
 import json as _json  # noqa: E402
 from datetime import datetime as _dt, timedelta as _td  # noqa: E402
 
 # 可回测的最低历史天数(需覆盖 warmup + 最短窗口, 约 1 年)
 MIN_BACKTEST_DAYS = 210
+RESEARCH_ACTION_PREFIX = "仅用于下一轮理想化模拟验证："
+
+
+def _validate_execution_contract(report) -> None:
+    """拒绝缺少或不符合固定机器边界的引擎报告。"""
+    expected = {
+        "execution_scope": EXECUTION_SCOPE,
+        "execution_assumption": EXECUTION_ASSUMPTION,
+        "real_trade_ready": False,
+        "fees_included": False,
+        "settlement_delay_included": False,
+        "cash_locking_included": False,
+    }
+    for field, value in expected.items():
+        if not hasattr(report, field) or getattr(report, field) != value:
+            raise ValueError(f"模拟执行边界缺失或无效: {field}")
+    disclaimer = getattr(report, "disclaimer", None)
+    if (
+        not isinstance(disclaimer, str)
+        or not disclaimer.strip()
+        or disclaimer != EXECUTION_DISCLAIMER
+    ):
+        raise ValueError("模拟执行边界缺失或无效: disclaimer")
 
 
 class SimulatorService:
@@ -108,27 +136,38 @@ class SimulatorService:
         friction_band_pp: float = 5.0,
         allow_default_portfolio: bool = True,
     ) -> dict:
-        """执行回测并返回完整响应(窗口/每日盈亏/盈利判定/优化建议)。
+        """执行理想化信号回放并返回完整边界响应。
 
         funds_in: [{"fund_code","fund_name","amount"}, ...]
         allow_default_portfolio: True 时, 若提交基金全部无历史,
             静默回退到当前持仓组合(RFC-016 模拟器默认行为);
             False 时(投资方案场景)抛错, 绝不静默替换成别的基金。
         """
+        explicit_funds = bool(funds_in)
+        if explicit_funds:
+            codes = [fin["fund_code"] for fin in funds_in]
+            duplicate_codes = sorted({code for code in codes if codes.count(code) > 1})
+            if duplicate_codes:
+                raise ValueError(
+                    f"基金列表包含重复 fund_code: {', '.join(duplicate_codes)}"
+                )
+
         info = self._fund_info_map()
         funds_used = []
 
         # 1. 组装引擎输入: 每只基金 code/name/nav_history + 初始金额
         engine_funds = []
         total_amount = 0.0
-        initial_weights = {}
+        initial_weights = None
+        missing_codes = []
         for fin in funds_in:
             code = fin["fund_code"]
             amount = float(fin.get("amount") or 0)
             name = fin.get("fund_name") or info.get(code, {}).get("name") or code
             navs = self._get_nav_history(code)
             if not navs:
-                continue  # 无历史, 跳过
+                missing_codes.append(code)
+                continue
             engine_funds.append({"code": code, "name": name, "nav_history": navs})
             total_amount += amount
             funds_used.append({
@@ -136,6 +175,12 @@ class SimulatorService:
                 "amount": amount,
                 "history_days": len(navs),
             })
+
+        if explicit_funds and missing_codes:
+            raise ValueError(
+                "显式选择的基金缺少可用净值历史: "
+                + ", ".join(missing_codes)
+            )
 
         # 默认: 用当前持仓组合(等权, 总成本=10000 便于看百分比)
         if not engine_funds:
@@ -147,14 +192,21 @@ class SimulatorService:
             engine_funds, funds_used, total_amount = self._default_portfolio(info)
 
         # 初始总资金
-        if initial_amount and initial_amount > 0:
+        amount_sum = sum(u["amount"] for u in funds_used)
+        if explicit_funds and initial_amount is not None:
+            if float(initial_amount) < amount_sum - 1e-9:
+                raise ValueError("initial_amount 不能小于显式基金金额合计")
+            total_amount = float(initial_amount)
+        elif initial_amount is not None and float(initial_amount) > 0:
             total_amount = float(initial_amount)
         if total_amount <= 0:
             total_amount = sum(f["amount"] for f in funds_used) or 10000.0
 
-        for u in funds_used:
-            if u["amount"] and u["amount"] > 0:
-                initial_weights[u["fund_code"]] = round(u["amount"] / total_amount, 4)
+        if explicit_funds:
+            initial_weights = {
+                u["fund_code"]: u["amount"] / total_amount
+                for u in funds_used
+            }
 
         # 2. 跑引擎
         sim = Simulator(
@@ -163,8 +215,10 @@ class SimulatorService:
             warmup=min(warmup, 252),
             target_vol=target_vol,
             friction_band_pp=friction_band_pp,
+            initial_weights=initial_weights,
         )
         report = sim.simulate(engine_funds)
+        _validate_execution_contract(report)
 
         # 3. 加工为响应
         windows_out = {}
@@ -178,13 +232,20 @@ class SimulatorService:
             "generated_at": report.generated_at,
             "duration_seconds": report.duration_seconds,
             "initial_amount": report.initial_amount,
-            "initial_weights": initial_weights,
+            "initial_weights": report.initial_weights,
             "target_vol": report.target_vol,
             "warmup": report.warmup,
             "windows": windows_out,
             "summary": summary,
             "advice": advice,
             "funds_used": funds_used,
+            "execution_scope": report.execution_scope,
+            "execution_assumption": report.execution_assumption,
+            "real_trade_ready": report.real_trade_ready,
+            "fees_included": report.fees_included,
+            "settlement_delay_included": report.settlement_delay_included,
+            "cash_locking_included": report.cash_locking_included,
+            "disclaimer": report.disclaimer,
         }
 
     # ---------------------------------------------------------------
@@ -243,7 +304,7 @@ class SimulatorService:
                 "avg_excess_pct": 0, "best_excess_pct": 0, "worst_excess_pct": 0,
                 "profitable_windows": 0, "total_windows": 0,
                 "overall_profitable": False, "profit_confidence": "low",
-                "verdict": "无足够历史数据, 无法回测",
+                "verdict": "理想化回放无足够历史数据，不能推断可实现盈利。",
             }
 
         prof = sum(1 for w in wins if w["is_profitable"])
@@ -264,14 +325,14 @@ class SimulatorService:
             confidence = "low"
 
         if overall_profitable:
-            verdict = (f"整体具有盈利能力: 策略平均超额 {avg_excess:+.2f}%, "
-                       f"{beats}/{len(wins)} 个窗口跑赢死拿。")
+            verdict = (f"理想化回放显示正超额 {avg_excess:+.2f}%，"
+                       f"{beats}/{len(wins)} 个窗口跑赢死拿；不能推断可实现盈利。")
         elif avg_excess > 0:
-            verdict = (f"弱盈利: 平均超额 {avg_excess:+.2f}% 但仅 {beats}/{len(wins)} "
-                       f"窗口跑赢, 稳定性不足, 建议收紧风险参数。")
+            verdict = (f"理想化回放显示有限正超额 {avg_excess:+.2f}%，但仅 "
+                       f"{beats}/{len(wins)} 个窗口跑赢；不能推断可实现盈利。")
         else:
-            verdict = (f"暂未跑出稳定盈利: 平均超额 {avg_excess:+.2f}%, "
-                       f"策略不如死拿, 建议下调 target_vol 减少追涨杀跌或检查信号方向。")
+            verdict = (f"理想化回放暂未显示正超额，平均为 {avg_excess:+.2f}%；"
+                       "不能推断可实现盈利。")
 
         return {
             "avg_excess_pct": avg_excess,
@@ -302,7 +363,7 @@ class SimulatorService:
                     "target": "全年窗口(365天)",
                     "message": (f"长期策略超额 {long_win['excess_return_pct']:+.2f}%, "
                                 f"买/卖信号方向大致成立, 可维持当前决策参数。"),
-                    "action": "维持策略, 可小幅提高仓位利用率",
+                    "action": f"{RESEARCH_ACTION_PREFIX}观察当前参数在后续理想化窗口的表现",
                 })
             else:
                 advice.append({
@@ -310,7 +371,7 @@ class SimulatorService:
                     "target": "全年窗口(365天)",
                     "message": (f"长期策略超额 {long_win['excess_return_pct']:+.2f}%, "
                                 f"动态调仓不及死拿, 信号在高波动市场易追涨杀跌。"),
-                    "action": "下调 target_vol(如 0.15->0.10)并加大 friction_band(5->8)减少换手",
+                    "action": f"{RESEARCH_ACTION_PREFIX}比较较低 target_vol 与较大 friction_band 的回放结果",
                 })
 
         # 2. 回撤过大 -> 风险控制
@@ -322,7 +383,7 @@ class SimulatorService:
                 "target": f"{rr['window_days']}天窗口",
                 "message": (f"策略最大回撤 {rr['strategy_max_drawdown_pct']:.1f}% 偏大, "
                             f"虽收益可能为正, 但持有体验差、回撤中易恐慌抛售。"),
-                "action": "收紧 target_vol 或为高波动基金设个股仓位上限(DHARD_STOP)",
+                "action": f"{RESEARCH_ACTION_PREFIX}比较收紧 target_vol 或单基金上限的回放结果",
             })
 
         # 3. 单基金贡献: 找拖后腿的基金
@@ -344,7 +405,7 @@ class SimulatorService:
                         "target": f"基金 {code}",
                         "message": (f"策略期末将其仓位加至 {wgt*100:.0f}%(高于初始占比), "
                                     f"说明信号持续看好, 已加仓。"),
-                        "action": "若该基金近一年超额为正则维持; 否则设定单基上限防过度集中",
+                        "action": f"{RESEARCH_ACTION_PREFIX}比较单基金上限对集中度的回放影响",
                     })
 
         # 4. 组合总体
@@ -354,7 +415,7 @@ class SimulatorService:
                 "level": "success",
                 "target": "组合整体",
                 "message": f"策略最大回撤仅 {s['max_dd']:.1f}%, 风险控制良好。",
-                "action": "可适当提升 target_vol 释放收益空间",
+                "action": f"{RESEARCH_ACTION_PREFIX}比较提高 target_vol 后的回放风险收益",
             })
 
         if not any(a["level"] == "danger" for a in advice) and wins:
@@ -363,7 +424,7 @@ class SimulatorService:
                 advice.append({
                     "level": "success", "target": "组合整体",
                     "message": "各窗口均跑出正超额, 当前策略配置健康。",
-                    "action": "继续观察, 可在回撤加大时再收紧风险",
+                    "action": f"{RESEARCH_ACTION_PREFIX}继续观察回撤变化与参数敏感性",
                 })
 
         return advice

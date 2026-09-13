@@ -529,6 +529,15 @@ class AnalysisReport:
 #  BACKTEST / SIMULATION REPORT (RFC-016)
 # ============================================================
 
+EXECUTION_SCOPE = "idealized_signal_replay_only"
+EXECUTION_ASSUMPTION = "same_day_nav_instant_rebalance"
+EXECUTION_DISCLAIMER = (
+    "当天净值同时用于信号和即时再平衡；未计申赎费、确认延迟、资金占用、"
+    "净值发布时间、申赎截止和跨市场规则；结果只用于信号方向研究，"
+    "不可作为可实现收益或交易建议。"
+)
+
+
 @dataclass
 class SimDaySnapshot:
     """策略回测单日快照。"""
@@ -565,7 +574,7 @@ class BacktestWindow:
 
 @dataclass
 class BacktestReport:
-    """完整策略回测报告(与分析模块 AnalysisReport 平级的一等公民)。"""
+    """完整策略回放报告，并明确理想化执行边界。"""
     generated_at: str = ""
     duration_seconds: float = 0.0
     initial_amount: float = 0.0
@@ -575,3 +584,10 @@ class BacktestReport:
     # window_days -> BacktestWindow
     windows: Dict[int, BacktestWindow] = field(default_factory=dict)
     summary: Dict[str, float] = field(default_factory=dict)  # 多窗口最优/最差/平均超额
+    execution_scope: str = EXECUTION_SCOPE
+    execution_assumption: str = EXECUTION_ASSUMPTION
+    real_trade_ready: bool = False
+    fees_included: bool = False
+    settlement_delay_included: bool = False
+    cash_locking_included: bool = False
+    disclaimer: str = EXECUTION_DISCLAIMER

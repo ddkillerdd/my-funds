@@ -1,6 +1,6 @@
 <template>
   <div class="simulator-view">
-    <h2 class="page-title">策略回测 · 盈利能力分析</h2>
+    <h2 class="page-title">策略信号理想化回放</h2>
 
     <el-card shadow="never" class="input-card">
       <div class="fetch-row">
@@ -102,18 +102,25 @@
       </div>
 
       <div class="tip-text">
-        纯量化回放（RFC-016）：把你的这套买卖信号放到历史行情里重跑，验证它到底赚不赚钱。
-        模拟采用理想化执行（无费率/当日即时），侧重验证信号方向，不构成投资建议。
+        纯量化回放（RFC-016）：把买卖信号放到历史行情里重跑，观察信号方向与参数敏感性。
+        同日净值即时再平衡；未计费用/确认延迟/资金占用；不可视为可实现收益或真实交易建议。
       </div>
     </el-card>
 
     <!-- ==================== 结果 ==================== -->
     <template v-if="result">
+      <el-alert
+        title="同日净值即时再平衡；未计费用/确认延迟/资金占用；不可视为可实现收益或真实交易建议。"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="execution-boundary"
+      />
       <!-- 总结 -->
       <el-card shadow="never" class="result-card">
         <template #header>
           <div class="card-head">
-            <span>📊 盈利判定总结</span>
+            <span>📊 理想化回放结果摘要</span>
             <span class="sub-info">
               {{ result.funds_used.length }} 只基金 · 初始 {{ fmtMoney(result.initial_amount) }} · 耗时 {{ (result.duration_seconds || 0).toFixed(1) }}s
             </span>
@@ -254,7 +261,7 @@
 
       <!-- 优化建议 -->
       <el-card shadow="never" class="result-card">
-        <template #header><span>💡 优化建议（以盈利为目标）</span></template>
+        <template #header><span>💡 参数研究观察（不可直接执行）</span></template>
         <el-timeline v-if="result.advice.length">
           <el-timeline-item
             v-for="(a, i) in result.advice"
@@ -277,7 +284,7 @@
 
     <el-empty
       v-else
-      description="选择基金与金额后开始回测，查看策略的盈利能力"
+      description="选择基金与金额后开始回放，观察策略信号与参数表现"
       class="empty-hint"
     />
   </div>
@@ -476,6 +483,20 @@ function adviceTagType(level) {
   return { success: 'success', warning: 'warning', danger: 'danger', info: 'info' }[level] || 'info'
 }
 
+// 校验服务返回的完整机器执行边界，避免无边界结果进入页面。
+function hasValidExecutionContract(data) {
+  if (!data || typeof data.disclaimer !== 'string' || !data.disclaimer.trim()) return false
+  return data.execution_scope === 'idealized_signal_replay_only'
+    && data.execution_assumption === 'same_day_nav_instant_rebalance'
+    && data.real_trade_ready === false
+    && data.fees_included === false
+    && data.settlement_delay_included === false
+    && data.cash_locking_included === false
+    && data.disclaimer.includes('当天净值同时用于信号和即时再平衡')
+    && data.disclaimer.includes('未计申赎费、确认延迟、资金占用')
+    && data.disclaimer.includes('不可作为可实现收益')
+}
+
 // ---- 自适应优化方法 (RFC-017) ----
 async function loadAdaptive() {
   try {
@@ -552,12 +573,16 @@ async function run() {
   }
   loading.value = true
   try {
-    result.value = await runSimulation({
+    const data = await runSimulation({
       funds,
       windows: selectedWindows.value,
       target_vol: targetVol.value,
       friction_band_pp: frictionBand.value,
     })
+    if (!hasValidExecutionContract(data)) {
+      throw new Error('模拟执行边界缺失或无效')
+    }
+    result.value = data
     activeWindow.value = selectedWindows.value.includes(90)
       ? 90
       : selectedWindows.value[selectedWindows.value.length - 1]

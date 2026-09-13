@@ -1,9 +1,9 @@
 """Schemas for the portfolio strategy simulator (RFC-016).
 
-以"盈利"为核心的组合策略回测模块：
+以理想化信号回放和参数研究观察为核心的模拟模块：
 - 用户自定义基金 + 初始成本(金额)
 - 多窗口点内策略回放, 产出每日组合净值/盈亏趋势
-- 盈利判定 + 可执行的优化建议
+- 理想化回放内部统计 + 不可直接执行的参数研究观察
 """
 
 from pydantic import BaseModel, Field
@@ -73,7 +73,7 @@ class SimWindowOut(BaseModel):
 
 
 class SimAdviceOut(BaseModel):
-    """针对具体基金/窗口的可执行优化建议。"""
+    """针对具体基金/窗口的不可直接执行的参数研究观察。"""
     level: str = "info"          # success | warning | danger | info
     target: str = ""            # "全部组合" / "基金000311" / "90天窗口"
     message: str = ""
@@ -86,9 +86,9 @@ class SimSummaryOut(BaseModel):
     worst_excess_pct: float
     profitable_windows: int
     total_windows: int
-    overall_profitable: bool        # 整体能否盈利(多窗口多数正超额或平均正超额)
-    profit_confidence: str          # high | medium | low  盈利可信度
-    verdict: str                    # 一句话判定
+    overall_profitable: bool        # 理想化回放内部的整体统计(非真实盈利判断)
+    profit_confidence: str          # high | medium | low  理想化回放内部置信度
+    verdict: str                    # 理想化回放内部摘要
 
 
 class SimulationResponse(BaseModel):
@@ -102,7 +102,13 @@ class SimulationResponse(BaseModel):
     summary: SimSummaryOut = Field(default_factory=SimSummaryOut)
     advice: List[SimAdviceOut] = Field(default_factory=list)
     funds_used: List[Dict] = Field(default_factory=list)   # code/name/amount/history_days
-    disclaimer: str = "模拟采用理想化执行(无滑点/费率/当日即时), 侧重验证信号方向, 非精确投资收益。仅供参考, 不构成投资建议。"
+    execution_scope: str = Field(..., description="固定执行边界标识")
+    execution_assumption: str = Field(..., description="固定执行假设标识")
+    real_trade_ready: bool = Field(..., description="是否可直接用于真实交易")
+    fees_included: bool = Field(..., description="是否计入费用")
+    settlement_delay_included: bool = Field(..., description="是否计入确认延迟")
+    cash_locking_included: bool = Field(..., description="是否计入资金占用")
+    disclaimer: str = Field(..., description="完整的理想化执行边界免责声明")
 
 
 class SimFundOptionOut(BaseModel):

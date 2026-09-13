@@ -172,8 +172,12 @@ def plan_generate_tranches(plan_id: int, req: TrancheRequest, db: Session = Depe
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{plan_id}/confirm", summary="确认入场 -> 建仓 + 计划启用")
+@router.post(
+    "/{plan_id}/confirm",
+    summary="确认虚拟投资计划批次（不代表真实成交）",
+)
 def plan_confirm(plan_id: int, req: ConfirmRequest, db: Session = Depends(get_db)):
+    """确认虚拟计划批次；真实成交和全局持仓由 OpenClaw/实际平台记录。"""
     from backend.services.plan import PlanService
     try:
         return PlanService(db).confirm_entry(plan_id, execute_tranches=req.execute_tranches)

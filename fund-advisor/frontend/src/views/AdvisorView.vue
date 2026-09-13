@@ -254,9 +254,9 @@
                       <template v-if="a.current_amount != null">（现持 {{ fmtMoney(a.current_amount) }} → 目标 {{ fmtMoney(a.target_amount) }}）</template>
                     </p>
                     <p v-else-if="a.action_amount === 0" class="action-amount amt-zero">无需资金变动</p>
-                    <!-- RFC-020 块C: 记录实际怎么操作 -->
+                    <!-- RFC-020 块C: 记录建议执行反馈，不更新真实持仓/现金 -->
                     <div class="exec-row">
-                      <span class="exec-label">我实际：</span>
+                      <span class="exec-label">建议执行反馈（不更新真实持仓/现金）：</span>
                       <el-select
                         v-model="execSelections[a.fund_code]"
                         placeholder="选择操作"
@@ -464,7 +464,7 @@ const backtestStats = ref(null)
 const HISTORY_LIMIT = 20
 // RFC-020: 总资金(前端可调, 每次分析作为绝对金额定价基准)
 const totalCapital = ref(null)
-// RFC-020 块C: 实际操作记录 (fund_code → 用户回填选择)
+// RFC-020 块C: 建议执行反馈 (fund_code → 用户回填分类)
 const execSelections = ref({})
 const reportDate = computed(() => {
   // activeReportTime 形如 '2026-08-03 21:20:00'; 取前10位作报告日期
@@ -576,7 +576,7 @@ async function loadReportById(id) {
     if (data.found) {
       report.value = data.report
       activeReportTime.value = data.generated_at
-      // RFC-020 块C: 加载该报告下已有的实际操作记录
+      // RFC-020 块C: 加载该报告下已有的建议执行反馈
       execSelections.value = {}
       loadExecutions()
     } else {
@@ -645,7 +645,7 @@ async function saveTotalCapital(val) {
   }
 }
 
-// RFC-020 块C: 记录/回填“实际怎么操作”
+// RFC-020 块C: 记录/回填建议执行反馈
 async function saveExec(action, val) {
   if (!val) return
   if (!report.value?.actions?.length) {
@@ -672,13 +672,23 @@ async function saveExec(action, val) {
       }),
     })
     if (!resp.ok) throw new Error('保存失败')
-    ElMessage.success('已记录实际操作')
+    const data = await resp.json()
+    if (
+      data.record_scope !== 'advice_feedback_only' ||
+      data.holdings_updated !== false ||
+      data.cash_updated !== false ||
+      data.settlement_recorded !== false ||
+      data.requires_trade_confirmation !== true
+    ) {
+      throw new Error('响应安全合同缺失或无效')
+    }
+    ElMessage.success('已记录建议执行反馈；未更新真实持仓或现金')
   } catch (e) {
     ElMessage.error('记录失败: ' + e.message)
   }
 }
 
-// 加载某报告下已有的实际操作记录, 回填 execSelections
+// 加载某报告下已有的建议执行反馈, 回填 execSelections
 async function loadExecutions() {
   const reportId = activeReportId.value ?? null
   if (!reportId) return

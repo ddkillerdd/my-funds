@@ -1,6 +1,6 @@
 """Scheduler API - manual trigger for background jobs."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
@@ -11,16 +11,37 @@ router = APIRouter()
 
 @router.post("/run-advisor")
 def run_advisor_job(
-    push_email: bool = Query(True, description="Send email with report"),
+    push_email: bool = Query(
+        False,
+        description="本地邮件已禁用，必须为 false；交易日邮件由 OpenClaw 负责",
+    ),
     model: str = Query("stepfun-ai/step-3.7-flash", description="LLM model"),
-    force: bool = Query(False, description="Bypass the once-per-day email dedupe lock"),
+    force: bool = Query(
+        False,
+        description="本地邮件已禁用，必须为 false；不得绕过去重边界",
+    ),
+    read_only: bool = Query(
+        False,
+        description="true 会被明确拒绝；false 仍是可能写入数据库并调用外部模型的正常业务任务",
+    ),
     db: Session = Depends(get_db),
 ):
-    """Manually trigger the advisor job (AI analysis + optional email push).
+    """手动生成顾问报告。
 
-    Only one email is sent per calendar day by default (daily dedupe lock).
-    Pass force=true to force a fresh analysis + email regardless of the lock.
+    该 POST 不是只读巡检，也不是健康检查；可能写入 AdvisorReport、AdviceSnapshot、
+    FactorHitRate，并可能调用外部模型。本地邮件仍由 OpenClaw 责任边界控制。
+    read_only=true 会在任何业务调用前返回 400。
     """
     from backend.scheduler.advisor_job import AdvisorJob
-    result = AdvisorJob(db, push_email=push_email, model=model, force=force).run()
+    read_only_flag = read_only is True
+    try:
+        result = AdvisorJob(
+            db,
+            push_email=push_email,
+            model=model,
+            force=force,
+            read_only=read_only_flag,
+        ).run()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return result

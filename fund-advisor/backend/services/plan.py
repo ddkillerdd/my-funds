@@ -1,6 +1,6 @@
 """PlanService - 投资计划编排 (RFC-018 ⑤⑥ 核心).
 
-资金簿 + 分批 + 确认建仓 + 长期跟踪。
+资金簿 + 分批 + 虚拟计划确认 + 长期跟踪。
 
 生命周期:
   create_plan(draft) -> generates tranches -> confirm(建仓, active) -> completed
@@ -10,14 +10,14 @@
   每批投入金额 = 本批预算 × dca倍率(0.6/1.0/1.3)
   默认按周/双周分 3-6 个月建完; 每批按配比权重分配到单只基金。
 
-确认建仓:
-  单只基金按 计划配比权重 × 本批金额 买入 -> 写 plan_holding(独立核算浮盈)
-  同时写全局 holdings(每日顾问整体分析), 扣余额(used+/remaining-), tranche -> executed
+虚拟计划确认:
+  单只基金按计划配比权重 × 本批金额写入 plan_holding(独立核算浮盈)
+  只更新计划域；真实成交和全局持仓记录由 OpenClaw/实际平台确认。
 """
 
 import logging
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
 
 from sqlalchemy import select, func
@@ -177,85 +177,150 @@ class PlanService:
     #  确认建仓: 逐批执行(先做首批), 建持仓 + 扣余额
     # ─────────────────────────────────────────
     def confirm_entry(self, plan_id: int, execute_tranches: int = 1) -> dict:
-        """确认入场并把前 execute_tranches 批落地为持仓。"""
-        plan = self.db.execute(
-            select(PortfolioPlan).where(PortfolioPlan.id == plan_id)
-        ).scalar_one_or_none()
-        if not plan:
-            raise ValueError(f"计划 {plan_id} 不存在")
-        if plan.status == "completed":
-            raise ValueError("计划已完成")
+        """确认虚拟计划批次，不代表真实成交或全局持仓更新。"""
+        if execute_tranches < 1:
+            raise ValueError("execute_tranches 必须 >= 1")
 
-        alloc = plan.target_allocation or {}
-        if not alloc:
-            raise ValueError("计划无配比")
+        try:
+            # 计划和待执行批次必须在同一事务中加锁后重新读取。
+            plan = self.db.execute(
+                select(PortfolioPlan)
+                .where(PortfolioPlan.id == plan_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if not plan:
+                raise ValueError(f"计划 {plan_id} 不存在")
+            if plan.status == "completed":
+                raise ValueError("计划已完成")
 
-        # 找待执行批次
-        pending = self.db.execute(
-            select(PlanTranche)
-            .where(PlanTranche.plan_id == plan_id, PlanTranche.status == "pending")
-            .order_by(PlanTranche.tranche_no.asc())
-        ).scalars().all()
-        if not pending:
-            raise ValueError("没有待执行批次(计划可能已全部完成)")
+            alloc = plan.target_allocation or {}
+            if not alloc:
+                raise ValueError("计划无配比")
 
-        to_execute = pending[:execute_tranches]
-        executed_txn = []
-        total_spent = Decimal("0")
+            weights = {}
+            for code, raw_weight in alloc.items():
+                try:
+                    weight = Decimal(str(raw_weight))
+                except (InvalidOperation, TypeError, ValueError) as exc:
+                    raise ValueError(f"基金 {code} 的计划配比不是有效数字") from exc
+                if not weight.is_finite() or weight < 0:
+                    raise ValueError(f"基金 {code} 的计划配比必须为非负有限数")
+                weights[code] = weight
+            weight_total = sum(weights.values(), Decimal("0"))
+            if abs(weight_total - Decimal("100")) > Decimal("0.01"):
+                raise ValueError("计划配比合计必须为100%")
 
-        from backend.services.import_service import ImportService
+            pending = self.db.execute(
+                select(PlanTranche)
+                .where(
+                    PlanTranche.plan_id == plan_id,
+                    PlanTranche.status == "pending",
+                )
+                .order_by(PlanTranche.tranche_no.asc())
+                .with_for_update()
+            ).scalars().all()
+            if not pending:
+                raise ValueError("没有待执行批次(计划可能已全部完成)")
 
-        for tr in to_execute:
-            batch_amount = Decimal(str(tr.amount or 0))
-            # 校验余额
-            remaining = plan.remaining or Decimal("0")
-            if batch_amount > remaining:
-                batch_amount = remaining
-            if batch_amount <= 0:
-                tr.amount = Decimal("0")
+            to_execute = pending[:execute_tranches]
+            batch_amounts = []
+            total_batch_amount = Decimal("0")
+            for tr in to_execute:
+                try:
+                    batch_amount = Decimal(str(tr.amount or 0))
+                except (InvalidOperation, TypeError, ValueError) as exc:
+                    raise ValueError("批次金额不是有效数字") from exc
+                if not batch_amount.is_finite() or batch_amount < 0:
+                    raise ValueError("批次金额必须为非负有限数")
+                batch_amounts.append((tr, batch_amount))
+                total_batch_amount += batch_amount
+
+            remaining = Decimal(str(plan.remaining or 0))
+            if total_batch_amount > remaining:
+                raise ValueError(
+                    f"计划剩余预算不足：需要 {total_batch_amount}，剩余 {remaining}"
+                )
+
+            # 所有正金额批次共用一次完整净值预检，预检结束前不写计划域。
+            nav_by_code = {}
+            if total_batch_amount > 0:
+                missing_codes = []
+                for code, weight in weights.items():
+                    if weight <= 0:
+                        continue
+                    nav = self._latest_nav(code)
+                    try:
+                        nav_decimal = Decimal(str(nav)) if nav is not None else None
+                    except (InvalidOperation, TypeError, ValueError):
+                        nav_decimal = None
+                    if (
+                        nav_decimal is None
+                        or not nav_decimal.is_finite()
+                        or nav_decimal <= 0
+                    ):
+                        missing_codes.append(code)
+                    else:
+                        nav_by_code[code] = nav_decimal
+                if missing_codes:
+                    raise ValueError(
+                        "以下基金缺少有效净值，整批未执行："
+                        + ", ".join(missing_codes)
+                    )
+
+            executed_txn = []
+            total_spent = Decimal("0")
+            for tr, batch_amount in batch_amounts:
+                if batch_amount <= 0:
+                    tr.amount = Decimal("0")
+                    tr.status = "executed"
+                    tr.executed_at = datetime.utcnow()
+                    executed_txn.append(tr.concise())
+                    continue
+
+                for code, weight in weights.items():
+                    if weight <= 0:
+                        continue
+                    fund_amount = batch_amount * weight / Decimal("100")
+                    shares = fund_amount / nav_by_code[code]
+                    self._upsert_plan_holding(
+                        plan_id,
+                        code,
+                        float(weight),
+                        fund_amount,
+                        shares,
+                        nav_by_code[code],
+                    )
+
+                total_spent += batch_amount
+                tr.amount = batch_amount
                 tr.status = "executed"
                 tr.executed_at = datetime.utcnow()
-                continue
+                executed_txn.append(tr.concise())
 
-            # 按配比权重分配到单只, 写 plan_holding + 全局 holdings
-            spent_this = Decimal("0")
-            for code, wgt_pct in alloc.items():
-                fund_amount = batch_amount * Decimal(str(wgt_pct / 100.0))
-                if fund_amount <= 0:
-                    continue
-                nav = self._latest_nav(code)
-                if nav and nav > 0:
-                    shares = fund_amount / Decimal(str(nav))
-                    self._upsert_plan_holding(plan_id, code, wgt_pct, fund_amount, shares, nav)
-                    # 写全局 holdings(每日顾问跟踪)
-                    self._sync_global_holding(code, fund_amount, shares, nav)
-                spent_this += fund_amount
-            total_spent += spent_this
+            new_used = Decimal(str(plan.used_amount or 0)) + total_spent
+            plan.used_amount = new_used
+            plan.remaining = Decimal(str(plan.total_budget)) - new_used
+            plan.status = "completed" if plan.remaining <= 0 else "active"
+            if not plan.approved_at:
+                plan.approved_at = datetime.utcnow()
+            self.db.commit()
 
-            tr.amount = spent_this
-            tr.status = "executed"
-            tr.executed_at = datetime.utcnow()
-            executed_txn.append(tr.concise())
-
-        # 扣余额
-        new_used = Decimal(str(plan.used_amount or 0)) + total_spent
-        plan.used_amount = new_used
-        plan.remaining = Decimal(str(plan.total_budget)) - new_used
-        if plan.remaining <= Decimal("0"):
-            plan.status = "completed"
-        else:
-            plan.status = "active"
-        if not plan.approved_at:
-            plan.approved_at = datetime.utcnow()
-        self.db.commit()
-
-        return {
-            "plan_id": plan_id,
-            "status": plan.status,
-            "used_amount": float(plan.used_amount),
-            "remaining": float(plan.remaining),
-            "executed": executed_txn,
-        }
+            return {
+                "plan_id": plan_id,
+                "status": plan.status,
+                "used_amount": float(plan.used_amount),
+                "remaining": float(plan.remaining),
+                "executed": executed_txn,
+                "ledger_scope": "plan_only",
+                "global_holdings_updated": False,
+                "message": (
+                    "仅更新虚拟计划；真实成交和持仓须由 "
+                    "OpenClaw／实际平台记录确认"
+                ),
+            }
+        except Exception:
+            self.db.rollback()
+            raise
 
     # ─────────────────────────────────────────
     #  工具
@@ -324,31 +389,6 @@ class PlanService:
                 last_nav=nav, last_update=datetime.utcnow(),
             )
             self.db.add(row)
-
-    def _sync_global_holding(self, fund_code, amount, shares, nav):
-        """写全局 holdings(每日顾问整体分析用)。简单策略: 按计划批次新增一条持仓。"""
-        from backend.models.holding import FundHolding
-        name = self._fund_name(fund_code)
-        # 尝试归并到已有同基金持仓, 否则新建
-        existing = self.db.execute(
-            select(FundHolding)
-            .where(FundHolding.fund_code == fund_code, FundHolding.status == 1)
-            .order_by(FundHolding.id.desc())
-        ).scalars().first()
-        share_date = datetime.now().date()
-        if existing:
-            existing.shares = Decimal(str(existing.shares or 0)) + shares
-            existing.market_value = Decimal(str(existing.market_value or 0)) + amount
-        else:
-            h = FundHolding(
-                fund_code=fund_code, fund_name=name,
-                share_type="前收费", platform="投资方案(RFC-018)",
-                fund_account="plan-" + str(fund_code), trade_account="plan-" + str(fund_code),
-                shares=shares, share_date=share_date,
-                nav_on_import=nav, cost_nav=nav, market_value=amount,
-                status=1,
-            )
-            self.db.add(h)
 
     def _fund_name(self, fund_code: str) -> str:
         row = self.db.execute(
