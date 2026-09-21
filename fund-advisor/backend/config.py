@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # NewAPI (LLM Gateway)
     NEWAPI_BASE_URL: str = ""
     NEWAPI_API_KEY: str = ""
+    # 分析主模型：必须使用应用 NewAPI /v1/models 返回的无前缀模型 ID
+    ANALYZER_PRIMARY_MODEL: str = "mimo-v2.5-pro"
+    # 分析备用模型：英文逗号分隔，运行时会清理空白、重复和主模型重复项
+    ANALYZER_FALLBACK_MODELS: str = "mimo-v2.5"
 
     # SMTP (Email)
     SMTP_HOST: str = ""

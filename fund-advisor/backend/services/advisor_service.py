@@ -59,7 +59,7 @@ class AdvisorService:
         """运行投资组合分析。
 
         Args:
-            model: 保留兼容 (v3 使用固定模型链, 忽略此参数)
+            model: 保留兼容参数；v3 不覆盖统一环境模型配置
             engine: "v3" (默认, FundAnalyzer) 或 "v2" (旧引擎)
 
         Returns:
@@ -70,6 +70,39 @@ class AdvisorService:
 
         return self._analyze_v3()
 
+    def _build_llm_config(self) -> LLMConfig:
+        """从统一 settings 解析模型链并构造 FundAnalyzer 配置。"""
+        primary_model = (self.settings.ANALYZER_PRIMARY_MODEL or "").strip()
+        if not primary_model:
+            raise ValueError("ANALYZER_PRIMARY_MODEL 不能为空")
+
+        fallback_models = []
+        for candidate in (self.settings.ANALYZER_FALLBACK_MODELS or "").split(","):
+            model_name = candidate.strip()
+            if model_name and model_name != primary_model and model_name not in fallback_models:
+                fallback_models.append(model_name)
+
+        llm_fallback_models = fallback_models or [primary_model]
+        secondary_model = fallback_models[0] if fallback_models else primary_model
+        model_assignments = {
+            "trend": primary_model,
+            "risk": primary_model,
+            "value": primary_model,
+            "tech": primary_model,
+            "portfolio": primary_model,
+            "debate": secondary_model,
+            "cross_val": secondary_model,
+        }
+        return LLMConfig(
+            api_base=self.settings.NEWAPI_BASE_URL,
+            api_key=self.settings.NEWAPI_API_KEY,
+            primary_model=primary_model,
+            fallback_models=llm_fallback_models,
+            default_timeout=45.0,
+            fallback_timeout=60.0,
+            model_assignments=model_assignments,
+        )
+
     def _analyze_v3(self) -> dict:
         """v3: 使用 FundAnalyzer 引擎"""
         t0 = time.time()
@@ -79,38 +112,8 @@ class AdvisorService:
         if not portfolio_input.holdings:
             return {"error": "no_holdings", "message": "没有持仓数据"}
 
-        # 2. 创建 Analyzer 并执行（RFC-005 多模型分发策略）
-        #
-        # 模型稳定性实测 (2026-07-31 分析):
-        #   nano-9b        成功7  超时0    (0% 超时)  ← 最稳, 作主力
-        #   nemotron-30b   成功11 超时12   (52% 超时)
-        #   ds-flash       成功0  超时16   (100% 超时) ← 完全不可用
-        #
-        # 优化: 全面切到 nano-9b 为主工作马(价值/辩论不再首选 ds-flash),
-        #        nemotron-30b 作为可选深度模型但快速降级到 nano-9b,
-        #        ds-flash 从首选移除, 仅作最后兜底。超时缩短到 35s 快速失败。
-        config = LLMConfig(
-            api_base=self.settings.NEWAPI_BASE_URL,
-            api_key=self.settings.NEWAPI_API_KEY,
-            primary_model="deepseek-v4-flash",
-            fallback_models=[
-                "minimax-m3",
-                "stepfun-ai/step-3.7-flash",
-            ],
-            default_timeout=45.0,
-            fallback_timeout=60.0,
-            model_assignments={
-                "trend": "deepseek-v4-flash",
-                "risk": "deepseek-v4-flash",
-                "value": "deepseek-v4-flash",
-                "tech": "deepseek-v4-flash",
-                # ds-flash 在长 prompt+复杂 JSON schema 任务下可能输出散文。
-                # debate/cross_val 任务改用稳定输出 JSON 的模型。
-                "debate": "nvidia/nvidia-nemotron-nano-9b-v2",
-                "portfolio": "deepseek-v4-flash",
-                "cross_val": "nvidia/nvidia-nemotron-nano-9b-v2",
-            },
-        )
+        # 2. 创建 Analyzer 并执行；所有角色统一使用环境模型配置。
+        config = self._build_llm_config()
         analyzer = Analyzer(config)
         # RFC-017 自适应: 为各持仓基金注入经用户确认(approved)的生效策略参数;
         # 无则用保守默认(Analyzer 内部处理)。透明展示到报告, 便于核对。
