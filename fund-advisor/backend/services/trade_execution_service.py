@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from math import isfinite
 from typing import Optional
 
 from sqlalchemy import desc
@@ -41,7 +42,12 @@ def _validate_feedback_input(
     if actual_action not in ALLOWED_ACTIONS:
         raise ValueError("actual_action 仅允许 same_as_suggest/increase/reduce/none/reversed")
     if actual_amount is not None:
-        raise ValueError("actual_amount 必须为 null；建议反馈入口不记录成交金额")
+        try:
+            amount = float(actual_amount)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("actual_amount 必须为有限的人民币金额") from exc
+        if not isfinite(amount) or amount < 0:
+            raise ValueError("actual_amount 必须为大于等于0的有限人民币金额")
     if not isinstance(report_date, str):
         raise ValueError("report_date 必须为严格 YYYY-MM-DD 日期")
     try:
@@ -52,6 +58,35 @@ def _validate_feedback_input(
         raise ValueError("report_date 必须为严格 YYYY-MM-DD 日期")
     if not isinstance(fund_code, str) or not fund_code.strip():
         raise ValueError("fund_code 不能为空")
+
+
+def _normalize_actual_amount(
+    actual_action: str,
+    actual_amount: Optional[float],
+    suggested_amount: Optional[float],
+) -> float:
+    """把用户填写的正数绝对金额转换为数据库中的带方向金额。"""
+    amount = float(actual_amount or 0.0)
+    suggested = float(suggested_amount or 0.0)
+    if actual_action == "none":
+        if amount != 0:
+            raise ValueError("未操作时实际金额必须为0或留空")
+        return 0.0
+    if actual_action == "increase":
+        direction = 1
+    elif actual_action == "reduce":
+        direction = -1
+    elif actual_action == "same_as_suggest":
+        direction = 1 if suggested > 0 else -1 if suggested < 0 else 0
+    else:  # reversed
+        direction = -1 if suggested > 0 else 1 if suggested < 0 else 0
+    if direction == 0:
+        if amount != 0:
+            raise ValueError("原建议没有资金变动，实际金额必须为0或留空")
+        return 0.0
+    if amount <= 0:
+        raise ValueError("该操作必须填写大于0的实际人民币金额")
+    return round(direction * amount, 2)
 
 
 def _suggestion_from_item(item: dict, *, health: bool = False) -> dict:
@@ -106,9 +141,14 @@ def record_manual(
     actual_amount: Optional[float] = None,
     note: Optional[str] = None,
 ) -> TradeExecution:
-    """记录建议执行分类反馈，不代表成交或结算。"""
+    """记录用户手工确认的实际操作与金额，不自动改持仓或现金。"""
     _validate_feedback_input(report_date, fund_code, actual_action, actual_amount)
     sug = _load_suggestion(db, report_id, fund_code)
+    normalized_amount = _normalize_actual_amount(
+        actual_action,
+        actual_amount,
+        sug.get("action_amount"),
+    )
     existing = (
         db.query(TradeExecution)
         .filter(
@@ -130,7 +170,7 @@ def record_manual(
             suggested_amount=sug.get("action_amount"),
             actual_action=actual_action,
             actual_action_label=label,
-            actual_amount=actual_amount,
+            actual_amount=normalized_amount,
             source="manual",
             note=note,
         )
@@ -138,7 +178,7 @@ def record_manual(
     else:
         existing.actual_action = actual_action
         existing.actual_action_label = label
-        existing.actual_amount = actual_amount
+        existing.actual_amount = normalized_amount
         existing.fund_name = fund_name
         existing.note = note
         # 尽量补建议(若之前为空)

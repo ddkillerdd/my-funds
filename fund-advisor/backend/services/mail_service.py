@@ -169,7 +169,7 @@ class MailService:
         rows = []
         rows.append('<div style="background:#f0f9ff;border-left:4px solid #409eff;padding:12px 16px;margin-bottom:20px;border-radius:4px;">')
         rows.append('<h2 style="margin:0 0 6px 0;font-size:16px;">今日盘中涨跌速览</h2>')
-        rows.append('<p style="margin:0 0 8px 0;color:#909399;font-size:12px;">实时指数快照 · 13:30未收盘,但方向感已足够参考 · 非精确基金净值</p>')
+        rows.append('<p style="margin:0 0 8px 0;color:#909399;font-size:12px;">14:00指数方向快照 · 非精确基金净值 · A股/港股通常为盘中，美股为最近交易时段</p>')
         rows.append('<table style="width:100%;border-collapse:collapse;">')
         rows.append('<thead><tr style="background:#f5f7fa">'
                     '<th style="padding:6px;text-align:left">基金</th>'
@@ -185,6 +185,7 @@ class MailService:
             pct = iv.get("pct_today")
             ma = iv.get("vs_ma5")
             adv = iv.get("execution_advice", "观望")
+            semantics = iv.get("quote_semantics", "仅作辅助参考")
             if pct is not None:
                 pct_s = ("+" if pct > 0 else "") + "{:.2f}%".format(pct)
                 pct_color = "#f56c6c" if pct > 0 else ("#67c23a" if pct < 0 else "#606266")
@@ -198,9 +199,10 @@ class MailService:
                 <td style="padding:6px;color:#909399">{idx}</td>
                 <td style="padding:6px;color:{pct_color};font-weight:600">{pct_s}</td>
                 <td style="padding:6px;color:#909399">{ma_s}</td>
-                <td style="padding:6px">{adv}</td>
+                <td style="padding:6px">{adv}<div style="color:#909399;font-size:11px">{semantics}</div></td>
             </tr>""".format(
-                fund=fund, idx=idx, pct_s=pct_s, pct_color=pct_color, ma_s=ma_s, adv=adv
+                fund=fund, idx=idx, pct_s=pct_s, pct_color=pct_color,
+                ma_s=ma_s, adv=adv, semantics=semantics,
             ))
         rows.append("</tbody></table>")
         rows.append("</div>")

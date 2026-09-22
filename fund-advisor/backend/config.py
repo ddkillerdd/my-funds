@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     BEAR_CAP: float = 0.30            # 熊市防御上限 (R5)
     FRICTION_BAND_PP: float = 5.0     # 换手触发带(百分点, R6)
 
+    # 人工基金决策纪律：任务触发时间仍由 OpenClaw 管理，这里负责报告和金额门禁。
+    ADVISOR_DECISION_TIME: str = "14:00"
+    DAILY_BUY_LIMIT_RMB: float = 20.0
+    MONTHLY_BUY_LIMIT_RMB: float = 200.0
+
     @property
     def DATABASE_URL(self) -> str:
         return (

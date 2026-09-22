@@ -113,6 +113,8 @@ def analyze_portfolio(
         logger.info(f"Cleaned {to_delete} old report(s), kept last {MAX_REPORTS}")
 
     logger.info(f"Advisor report saved (id={report.id}, model={report.model_used})")
+    # 新生成报告也立即返回主键，方便用户当天回填实际执行金额。
+    result["report_id"] = report.id
     return result
 
 

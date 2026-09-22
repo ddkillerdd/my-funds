@@ -254,16 +254,18 @@
                       <template v-if="a.current_amount != null">（现持 {{ fmtMoney(a.current_amount) }} → 目标 {{ fmtMoney(a.target_amount) }}）</template>
                     </p>
                     <p v-else-if="a.action_amount === 0" class="action-amount amt-zero">无需资金变动</p>
-                    <!-- RFC-020 块C: 记录建议执行反馈，不更新真实持仓/现金 -->
+                    <p v-if="a.policy_reasons?.length" class="policy-reason">
+                      门禁：{{ a.policy_reasons.map(policyReasonLabel).join('；') }}
+                    </p>
+                    <!-- RFC-020 块C: 记录实际执行反馈和金额，不自动更新真实持仓/现金 -->
                     <div class="exec-row">
-                      <span class="exec-label">建议执行反馈（不更新真实持仓/现金）：</span>
+                      <span class="exec-label">实际操作（不自动更新持仓/现金）：</span>
                       <el-select
                         v-model="execSelections[a.fund_code]"
                         placeholder="选择操作"
                         size="small"
                         style="width: 110px"
                         clearable
-                        @change="(v) => saveExec(a, v)"
                       >
                         <el-option label="照做" value="same_as_suggest" />
                         <el-option label="加仓" value="increase" />
@@ -271,6 +273,17 @@
                         <el-option label="未操作" value="none" />
                         <el-option label="反向" value="reversed" />
                       </el-select>
+                      <el-input-number
+                        v-model="execAmounts[a.fund_code]"
+                        :min="0"
+                        :step="1"
+                        :precision="2"
+                        :controls="false"
+                        size="small"
+                        placeholder="实际金额(元)"
+                        style="width: 125px"
+                      />
+                      <el-button size="small" @click="saveExec(a)">保存</el-button>
                     </div>
                   </div>
                 </el-timeline-item>
@@ -284,7 +297,7 @@
               <div class="section-header">
                 <el-icon :size="20"><TrendCharts /></el-icon>
                 <span>盘中择时速览</span>
-                <span class="intraday-note">今日指数实时 · 仅参考方向感，不影响核心金额</span>
+                <span class="intraday-note">14:00指数方向 · 非基金精确净值 · 美股为最近时段</span>
               </div>
             </template>
             <div class="intraday-grid">
@@ -298,6 +311,7 @@
                   {{ iv.execution_advice || '观望' }}
                 </el-tag>
                 <div v-if="iv.vs_ma5 != null" class="intraday-ma">vs5日线 {{ iv.vs_ma5 > 0 ? '+' : '' }}{{ iv.vs_ma5 }}%</div>
+                <div class="intraday-context">{{ iv.quote_semantics }}</div>
               </div>
             </div>
           </el-card>
@@ -466,6 +480,8 @@ const HISTORY_LIMIT = 20
 const totalCapital = ref(null)
 // RFC-020 块C: 建议执行反馈 (fund_code → 用户回填分类)
 const execSelections = ref({})
+// 用户填写支付宝实际成交的人民币绝对金额，方向由操作分类决定。
+const execAmounts = ref({})
 const reportDate = computed(() => {
   // activeReportTime 形如 '2026-08-03 21:20:00'; 取前10位作报告日期
   const t = activeReportTime.value || ''
@@ -506,6 +522,20 @@ function actionLabel(action) {
   return labels[action] || action
 }
 
+function policyReasonLabel(reason) {
+  const labels = {
+    analysis_degraded: '分析链路已降级，本次金额归零',
+    report_data_quality_not_ready: '数据质量不足，本次金额归零',
+    single_fund_daily_limit: '每天只允许一只基金买入',
+    daily_buy_limit_reached: '今日20元额度已用完',
+    monthly_buy_limit_reached: '本月200元额度已用完',
+    consecutive_trading_day_cooldown: '与上一交易日连续，未满足严格例外',
+    budget_cap_applied: '已按剩余额度自动缩小金额',
+    policy_unavailable: '执行门禁异常，已安全归零',
+  }
+  return labels[reason] || reason
+}
+
 function fmtMoney(v) {
   if (v == null || isNaN(v)) return '-'
   return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' 元'
@@ -542,7 +572,7 @@ async function runAnalysis() {
     const data = await resp.json()
     report.value = data
     activeReportTime.value = data.generated_at
-    activeReportId.value = null
+    activeReportId.value = data.report_id ?? null
     ElMessage.success('分析完成，报告已保存')
     // Refresh history + backtest stats
     await loadHistory()
@@ -578,6 +608,7 @@ async function loadReportById(id) {
       activeReportTime.value = data.generated_at
       // RFC-020 块C: 加载该报告下已有的建议执行反馈
       execSelections.value = {}
+      execAmounts.value = {}
       loadExecutions()
     } else {
       error.value = data.message || '报告加载失败'
@@ -645,8 +676,9 @@ async function saveTotalCapital(val) {
   }
 }
 
-// RFC-020 块C: 记录/回填建议执行反馈
-async function saveExec(action, val) {
+// RFC-020 块C: 记录/回填用户实际操作与人民币金额
+async function saveExec(action) {
+  const val = execSelections.value[action.fund_code]
   if (!val) return
   if (!report.value?.actions?.length) {
     ElMessage.warning('请先生成/加载报告')
@@ -667,14 +699,18 @@ async function saveExec(action, val) {
         fund_code: action.fund_code,
         fund_name: action.fund_name || action.fund_code,
         actual_action: val,
-        actual_amount: null,
+        actual_amount: execAmounts.value[action.fund_code] ?? null,
         note: '前端回填',
       }),
     })
-    if (!resp.ok) throw new Error('保存失败')
+    if (!resp.ok) {
+      const errorData = await resp.json().catch(() => ({}))
+      throw new Error(errorData.detail || '保存失败')
+    }
     const data = await resp.json()
     if (
       data.record_scope !== 'advice_feedback_only' ||
+      data.actual_amount_recorded !== true ||
       data.holdings_updated !== false ||
       data.cash_updated !== false ||
       data.settlement_recorded !== false ||
@@ -682,7 +718,7 @@ async function saveExec(action, val) {
     ) {
       throw new Error('响应安全合同缺失或无效')
     }
-    ElMessage.success('已记录建议执行反馈；未更新真实持仓或现金')
+    ElMessage.success('已记录实际操作金额；未自动更新真实持仓或现金')
   } catch (e) {
     ElMessage.error('记录失败: ' + e.message)
   }
@@ -697,10 +733,13 @@ async function loadExecutions() {
     if (!resp.ok) return
     const data = await resp.json()
     const sel = {}
+    const amounts = {}
     for (const r of data.records || []) {
       if (r.actual_action) sel[r.fund_code] = r.actual_action
+      if (r.actual_amount != null) amounts[r.fund_code] = Math.abs(Number(r.actual_amount))
     }
     execSelections.value = sel
+    execAmounts.value = amounts
   } catch { /* silent */ }
 }
 
@@ -794,6 +833,11 @@ onMounted(async () => {
   color: #909399;
   white-space: nowrap;
 }
+.policy-reason {
+  margin: 4px 0 0;
+  color: #e6a23c;
+  font-size: 12px;
+}
 
 .intraday-note {
   font-size: 12px;
@@ -833,6 +877,12 @@ onMounted(async () => {
   font-size: 12px;
   color: #909399;
   margin-top: 2px;
+}
+.intraday-context {
+  margin-top: 4px;
+  color: #909399;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .skeleton-card {

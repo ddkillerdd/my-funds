@@ -1,6 +1,6 @@
 """intraday.py — 盘中短线(择时)信号 (RFC-020 块3)。
 
-用户确认: 取消轮询, 仅在 13:30 分析时拉一次实时数据即可。
+用户确认: 取消轮询, 仅在 14:00 分析时拉一次行情数据即可。
 只产 execution_advice(今日执行/观望/加急), 绝不改 target_weight/action_amount。
 
 数据源: 腾讯行情 (qt.gtimg.cn 实时 + ifzq.gtimg.cn 历史K线)。
@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, time
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -22,6 +24,9 @@ FUND_INTRADAY_INDEX = {
     "000311": "沪深300",
     "588760": "科创50",
     "018044": "纳斯达克100",
+    "270042": "纳斯达克100",
+    "022430": "中证A500",
+    "013308": "恒生科技",
 }
 
 # 指数 → 腾讯代码
@@ -30,6 +35,19 @@ INDEX_QTCODE = {
     "中证白酒": "sz399997",
     "科创50": "sh000688",
     "纳斯达克100": "usNDX",
+    "中证A500": "sh000510",
+    "恒生科技": "hkHSTECH",
+}
+
+# 指数交易市场。14:00 时 A 股和港股通常处于盘中；美股尚未开盘，
+# 纳指数据只能代表最近一个美股交易时段，不能冒充当日基金实时净值。
+INDEX_MARKET = {
+    "沪深300": "CN",
+    "中证白酒": "CN",
+    "科创50": "CN",
+    "纳斯达克100": "US",
+    "中证A500": "CN",
+    "恒生科技": "HK",
 }
 
 _QT_REALTIME_URL = "https://qt.gtimg.cn/q="
@@ -39,6 +57,7 @@ _HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}
 # 短线择时阈值: 2% 明显, 1% 轻微
 _OVERSOLD = -2.0
 _OVERBOUGHT = 2.0
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _client() -> httpx.Client:
@@ -76,6 +95,7 @@ def fetch_intraday(index_name: str) -> Optional[dict]:
             "pct_today": round(pct, 2),
             "high": high,
             "low": low,
+            "quote_time": fld[30] if len(fld) > 30 and fld[30] else None,
         }
     except Exception as e:  # noqa: BLE001
         logger.debug("intraday fetch %s failed: %s", index_name, e)
@@ -142,8 +162,48 @@ def intraday_signal(pct_today: Optional[float], close_vs_ma5: Optional[float] = 
     }
 
 
-def build_intraday_view(fund_codes) -> Dict[str, dict]:
-    """为一批基金批量拉指数实时+5日线 → 短线信号。失败基金跳过(非致命)。"""
+def market_quote_context(index_name: str, now: Optional[datetime] = None) -> dict:
+    """说明行情在中国决策时点是否属于本市场实时盘中数据。"""
+    current = now or datetime.now(_SHANGHAI_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=_SHANGHAI_TZ)
+    else:
+        current = current.astimezone(_SHANGHAI_TZ)
+
+    market = INDEX_MARKET.get(index_name, "UNKNOWN")
+    weekday = current.weekday() < 5
+    clock = current.time().replace(tzinfo=None)
+    if market == "CN":
+        in_session = weekday and (
+            time(9, 30) <= clock <= time(11, 30)
+            or time(13, 0) <= clock <= time(15, 0)
+        )
+        semantics = "A股指数盘中方向" if in_session else "A股最近行情；当前非连续交易时段"
+    elif market == "HK":
+        in_session = weekday and (
+            time(9, 30) <= clock <= time(12, 0)
+            or time(13, 0) <= clock <= time(16, 0)
+        )
+        semantics = "港股指数盘中方向" if in_session else "港股最近行情；当前非连续交易时段"
+    elif market == "US":
+        in_session = False
+        semantics = (
+            f"最近一个美股交易时段；中国{current:%H:%M}不代表今晚纳指走势或基金精确净值"
+        )
+    else:
+        in_session = False
+        semantics = "未知市场行情，仅作辅助参考"
+    return {
+        "market": market,
+        "decision_live": in_session,
+        "quote_semantics": semantics,
+        "decision_time": f"{current:%H:%M} Asia/Shanghai",
+        "holiday_calendar_checked": False,
+    }
+
+
+def build_intraday_view(fund_codes, now: Optional[datetime] = None) -> Dict[str, dict]:
+    """为当前基金拉指数快照与5日线，并明确行情时效边界。"""
     out: Dict[str, dict] = {}
     for code in fund_codes:
         idx = FUND_INTRADAY_INDEX.get(code)
@@ -159,9 +219,13 @@ def build_intraday_view(fund_codes) -> Dict[str, dict]:
                 ma5 = sum(closes) / len(closes)
                 close_vs_ma5 = (snap["price"] / ma5 - 1) * 100.0
         sig = intraday_signal(snap["pct_today"] if snap else None, close_vs_ma5)
+        context = market_quote_context(idx, now=now)
         out[code] = {
             "index": idx,
             **sig,
             "realtime_ok": snap is not None,
+            "source": "腾讯行情",
+            "quote_time": snap.get("quote_time") if snap else None,
+            **context,
         }
     return out

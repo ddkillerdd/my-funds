@@ -17,6 +17,7 @@ import time
 from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -42,6 +43,7 @@ from engine.analyzer import Analyzer
 from engine.llm_client import LLMConfig
 
 logger = logging.getLogger(__name__)
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class AdvisorService:
@@ -143,6 +145,22 @@ class AdvisorService:
 
         # 3. 转换为 API JSON
         result = self._report_to_api_json(report, t0)
+
+        # 用户资金纪律必须由应用代码强制执行，不能只依赖模型或任务提示词。
+        try:
+            from backend.services.execution_policy import apply_execution_policy_from_db
+            result = apply_execution_policy_from_db(
+                self.db,
+                result,
+                today=datetime.now(SHANGHAI_TZ).date(),
+                daily_limit=self.settings.DAILY_BUY_LIMIT_RMB,
+                monthly_limit=self.settings.MONTHLY_BUY_LIMIT_RMB,
+                decision_time=self.settings.ADVISOR_DECISION_TIME,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("execution policy failed; report is fail-closed: %s", e)
+            from backend.services.execution_policy import fail_closed_execution_policy
+            result = fail_closed_execution_policy(result)
 
         # RFC-017: 报告展示当前生效的策略参数(自适应透明性)
         if _strategy_shown:
@@ -666,7 +684,7 @@ class AdvisorService:
             # v3 新增字段
             "per_fund_diagnosis": per_fund_diagnosis,
 
-            # RFC-020 块3: 盘中短线(择时)信号 — 快捷参考, 不参与核心金额/权重
+            # RFC-020 块3: 盘中行情方向 — 标明市场时效，不冒充精确基金净值
             "intraday_view": self._build_intraday_view(report.per_fund_diagnosis),
             # RFC-020 块5: 市场基准对比元信息
             "benchmark": {
@@ -686,7 +704,7 @@ class AdvisorService:
             "model": f"FundAnalyzer v3 ({report.model})",
             "model_chain": report.model_chain,
             "model_roles": getattr(report, 'model_roles', {}),
-            "portfolio_date": str(date.today()),
+            "portfolio_date": datetime.now(SHANGHAI_TZ).date().isoformat(),
             "analysis_duration_seconds": round(elapsed, 1),
             "data_duration_seconds": report.data_duration_seconds,
             "llm_call_count": report.llm_call_count,
@@ -705,8 +723,8 @@ class AdvisorService:
         }
 
     def _build_intraday_view(self, per_fund_diagnosis):
-        """RFC-020 块3: 为持仓拉盘中短线(择时)信号。
-        数据源腾讯(httpx 可用), 只产 execution_advice, 不参与核心金额。
+        """RFC-020 块3: 为持仓拉14:00行情方向和时效说明。
+        数据源腾讯(httpx 可用), 只产 execution_advice, 核心金额由执行门禁裁剪。
         失败/无映射基金静默跳过, 绝不中断报告。
         """
         try:

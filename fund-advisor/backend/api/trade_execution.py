@@ -25,6 +25,7 @@ router = APIRouter()
 
 SAFETY_RESPONSE = {
     "record_scope": "advice_feedback_only",
+    "actual_amount_recorded": True,
     "holdings_updated": False,
     "cash_updated": False,
     "settlement_recorded": False,
@@ -43,11 +44,15 @@ class TradeExecIn(BaseModel):
     fund_code: str = Field(..., min_length=1, description="基金代码")
     fund_name: Optional[str] = None
     actual_action: str = Field(..., description="same_as_suggest/increase/reduce/none/reversed")
-    actual_amount: Optional[float] = Field(None, description="必须为空；本入口不记录成交金额")
+    actual_amount: Optional[float] = Field(
+        None,
+        ge=0,
+        description="用户实际执行的人民币绝对金额；减仓方向由 actual_action 统一换算",
+    )
     note: Optional[str] = None
 
 
-@router.post("/record", summary="记录建议执行反馈(不更新真实持仓/现金)")
+@router.post("/record", summary="记录实际执行反馈和金额(不更新真实持仓/现金)")
 def create_record(body: TradeExecIn, db: Session = Depends(get_db)):
     try:
         row = record_manual(

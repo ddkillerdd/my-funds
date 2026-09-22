@@ -115,7 +115,7 @@ def call_record(session, **overrides):
         "fund_code": "A",
         "fund_name": "基金A",
         "actual_action": "same_as_suggest",
-        "actual_amount": None,
+        "actual_amount": 20,
         "note": "合成测试",
     }
     values.update(overrides)
@@ -132,12 +132,11 @@ def assert_contract_response(payload):
 
 
 def test_a_invalid_inputs_are_rejected_before_database_actions():
-    """断言未知动作、任意金额和非法日期都在查询前拒绝。"""
+    """断言未知动作、负数/非有限金额和非法日期都在查询前拒绝。"""
     cases = [
         {"actual_action": "filled"},
-        {"actual_amount": 0},
-        {"actual_amount": 100},
         {"actual_amount": -100},
+        {"actual_amount": float("inf")},
         {"report_date": "2026-9-2"},
         {"report_date": "2026-02-30"},
     ]
@@ -185,11 +184,11 @@ def test_b_missing_and_ambiguous_suggestions_never_write():
 
 
 def test_c_valid_feedback_only_writes_trade_execution(monkeypatch):
-    """断言合法反馈只新增一条建议反馈并提交一次。"""
+    """断言合法反馈记录实际金额但不触碰持仓或现金。"""
     session = FakeSession(report=make_report(actions=[make_action()]))
     row = call_record(session)
     assert row.actual_action == "same_as_suggest"
-    assert row.actual_amount is None
+    assert row.actual_amount == 20
     assert row.source == "manual"
     assert session.add_calls == 1
     assert session.commit_calls == 1
@@ -209,7 +208,7 @@ def test_d_api_contract_and_error_mapping(monkeypatch):
             "id": 1,
             "fund_code": "A",
             "actual_action": "same_as_suggest",
-            "actual_amount": None,
+            "actual_amount": 20,
         }
     )
     monkeypatch.setattr(trade_api, "record_manual", lambda *args, **kwargs: row)
@@ -218,7 +217,7 @@ def test_d_api_contract_and_error_mapping(monkeypatch):
         report_date="2026-09-12",
         fund_code="A",
         actual_action="same_as_suggest",
-        actual_amount=None,
+        actual_amount=20,
     )
     post_payload = trade_api.create_record(body, object())
     assert post_payload["ok"] is True
@@ -281,15 +280,35 @@ def test_e_commit_failure_rolls_back_and_frontend_shows_boundary():
         / "AdvisorView.vue"
     )
     source = frontend_path.read_text(encoding="utf-8")
-    assert "建议执行反馈" in source
-    assert "不更新真实持仓/现金" in source
+    assert "实际操作（不自动更新持仓/现金）" in source
     for field in (
         "record_scope",
+        "actual_amount_recorded",
         "holdings_updated",
         "cash_updated",
         "settlement_recorded",
         "requires_trade_confirmation",
     ):
         assert field in source
-    assert "我实际：" not in source
-    assert "已记录实际操作" not in source
+    assert "实际金额(元)" in source
+    assert "已记录实际操作金额" in source
+
+
+def test_f_actual_amount_direction_and_zero_rules():
+    """断言前端填写正数金额后按实际动作保存方向，并严格处理未操作。"""
+    reduce_session = FakeSession(report=make_report(actions=[make_action()]))
+    reduced = call_record(
+        reduce_session,
+        actual_action="reduce",
+        actual_amount=12.34,
+    )
+    assert reduced.actual_amount == -12.34
+
+    none_session = FakeSession(report=make_report(actions=[make_action()]))
+    none = call_record(none_session, actual_action="none", actual_amount=0)
+    assert none.actual_amount == 0
+
+    invalid_none = FakeSession(report=make_report(actions=[make_action()]))
+    with pytest.raises(ValueError, match="未操作"):
+        call_record(invalid_none, actual_action="none", actual_amount=1)
+    assert invalid_none.commit_calls == 0
