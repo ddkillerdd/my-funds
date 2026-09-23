@@ -44,10 +44,12 @@ Copy-Item -LiteralPath 'E:\myfund11111\ops\.env.example' -Destination 'E:\myfund
 ## 当前服务器接入状态
 
 - SSH 密钥已绑定并通过主机指纹校验。
-- 服务器为 Rocky Linux + systemd。前端 unit 正常运行；backend unit 的失败自动重试已停止，旧健康 uvicorn 继续由 `tat_agent.service` 控制，后端健康接口与前端首页均已验证。
+- 服务器为 Rocky Linux；当前 my-funds 生产应用由 Compose project `my-funds-production-direct1` 承载。
+- backend 使用 `my-funds-production-backend:425faf2-decision`，frontend 使用 `my-funds-production-frontend:425faf2-decision`；2026-09-22 只读复核确认各一个运行实例，后端健康接口与前端首页均通过。
 - MySQL 为服务器主机进程，NewAPI 的 MySQL 容器不是 my-funds 业务数据库。
-- 服务器工作区原有 3 个未提交热修已经审查并进入 GitHub 提交 `5f8bc18`；生产目录仍保留这些差异，部署时禁止覆盖式拉取。
-- 服务器应用 .env 权限已收紧为仅属主可读写。
+- 当前发布源为固定 Git 提交 `425faf2d65d7a0cb6fe8e61ab14b3761da72c420`，旧生产工作区不得作为发布源或被覆盖式拉取。
+- 服务器应用 `.env` 和本次回滚快照权限均已收紧为仅属主可读写；离线发布归档保留供核验和回滚使用。
+- OpenClaw 固定决策任务为工作日 14:00、`Asia/Shanghai`，负责交易日判断和邮件，不负责自动交易。
 
 ## 发布门禁
 
@@ -59,13 +61,13 @@ Copy-Item -LiteralPath 'E:\myfund11111\ops\.env.example' -Destination 'E:\myfund
 4. 发布后完成后端健康检查、前端首页检查和关键 API 检查。
 5. OpenClaw 和其他执行端没有并发写入，自动任务与 systemd 重启策略已经记录暂停和恢复方式。
 
-当前服务器尚未发现可直接调用的 mysqldump 客户端，因此数据库备份自动化仍是发布前门禁，不能被跳过。
+2026-09-19 的 DBSAFE2 记录已完成服务器内数据库备份和隔离恢复核对。该记录证明当时的备份可恢复，不替代未来 schema 或生产数据变更前的新备份。
 
 Sol 与 Luna 的长期后台调度规则见 `E:\myfund11111\docs\operations\CODEX_LUNA_ORCHESTRATION.md`；Codex、Luna 与 OpenClaw 的任务认领、分支、热修回收和发布窗口规则见 `E:\myfund11111\docs\operations\OPENCLAW_CODEX_COLLABORATION.md`。
 
 ## 后续扩展
 
-- Deploy-Server.ps1：在热修合并、备份方式确认后部署指定 Git SHA。
-- 服务器端数据库备份和恢复演练。
-- systemd 服务清单与正式前端构建切换。
-- 发布记录与回滚验证。
+- 将已经验证的“固定 SHA、离线归档、固定镜像、Compose 切换和回滚”流程固化为可审查的部署脚本。
+- 为每次数据库变更生成独立备份、隔离恢复和逐表计数证据。
+- 记录每次生产镜像、OpenClaw 任务状态、健康检查和回滚目标。
+- 将前端依赖审计和入口包拆分作为独立维护任务处理。

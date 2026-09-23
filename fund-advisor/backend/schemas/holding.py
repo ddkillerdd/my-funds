@@ -75,14 +75,14 @@ class HoldingDeleteResponse(BaseModel):
 
 
 class HoldingChangeRequest(BaseModel):
-    """RFC-011: Record an add/increase or reduce/decrease operation by RMB amount.
+    """记录一笔已确认的加仓或减仓操作。
 
-    Add (increase): shares += amount/nav, and recompute average cost_nav (B scheme).
-    Reduce (decrease): shares -= amount/nav; cost_nav unchanged; to 0 => clear.
+    优先使用平台最终确认的份额；没有确认份额时才按金额/净值估算。
     """
     change_type: str  # "increase" | "decrease"
-    amount: Decimal    # RMB amount invested/redeemed this operation
-    cost_nav_input: Optional[Decimal] = None  # actual buy price; default = latest nav
+    amount: Optional[Decimal] = None  # 实际支付或到账的人民币金额
+    confirmed_shares: Optional[Decimal] = None  # 平台最终确认的交易份额
+    cost_nav_input: Optional[Decimal] = None  # 平台确认净值；缺失时按金额/份额或最新净值推导
     note: Optional[str] = None
     business_date: Optional[date] = None
 

@@ -61,7 +61,10 @@ def create_holding(
 ):
     """Create a new manual holding entry."""
     from backend.services.holding_service import HoldingService
-    return HoldingService(db).create_holding(body)
+    try:
+        return HoldingService(db).create_holding(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.delete("/{holding_id}", response_model=HoldingDeleteResponse)
@@ -83,10 +86,10 @@ def change_holding(
     body: HoldingChangeRequest,
     db: Session = Depends(get_db),
 ):
-    """RFC-011: Record an add/increase or reduce/decrease by RMB amount.
+    """记录一笔平台已确认的加仓或减仓。
 
-    Writes a holding_changes record and updates the live holding,
-    so the next analysis reflects the true portfolio.
+    优先使用确认份额；仅提供金额时才按净值换算。写入持仓变动并更新当前持仓，
+    使下一次分析使用真实的平台级份额。
     """
     from backend.services.holding_service import HoldingService
     try:

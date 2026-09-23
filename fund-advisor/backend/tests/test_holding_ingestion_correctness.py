@@ -17,10 +17,10 @@ from backend.services.snapshot_service import SnapshotService
 
 
 # 验证 Excel 的数字基金代码恢复为六位字符串。
-def test_excel_parser_preserves_six_digit_fund_code():
+def test_excel_parser_preserves_six_digit_fund_code(tmp_path):
     import openpyxl
 
-    path = __import__("pathlib").Path(__file__).with_name(".holding-ingestion-test.xlsx")
+    path = tmp_path / "holding-ingestion-test.xlsx"
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     headers = ["序号", "基金代码", "基金名称", "份额类别", "基金管理人", "基金账户", "销售机构", "交易账户", "持有份额", "份额日期", "基金净值", "净值日期", "资产情况", "结算币种", "分红方式"]
@@ -32,12 +32,9 @@ def test_excel_parser_preserves_six_digit_fund_code():
     sheet.append([1, 1, "测试基金", "前收费", "测试管理人", "账户", "平台", "交易账户", 10, date(2026, 9, 4), Decimal("1.2"), date(2026, 9, 3), 12, "人民币", None])
     workbook.save(path)
     workbook.close()
-    try:
-        holdings, errors, _ = parse_excel(path)
-        assert not errors
-        assert holdings[0].fund_code == "000001"
-    finally:
-        path.unlink(missing_ok=True)
+    holdings, errors, _ = parse_excel(path)
+    assert not errors
+    assert holdings[0].fund_code == "000001"
 
 
 # 验证 Excel 的 datetime 单元格按日期解析而不是被当作无效字符串。
@@ -403,10 +400,14 @@ def test_create_holding_entry_writes_manual_new_event():
     session = _EntrySession([None])
     HoldingService(session).create_holding(HoldingCreate(
         fund_code="000101", fund_name="虚构基金", platform="平台A",
+        fund_account="平台A主账户", trade_account="平台A交易账户",
         shares=Decimal("5"), share_date=date(2026, 9, 4),
         market_value=Decimal("10"), nav_on_import=Decimal("2"),
     ))
+    holding = next(value for value in session.added if isinstance(value, FundHolding))
     events = [value for value in session.added if isinstance(value, HoldingChange)]
+    assert holding.fund_account == "平台A主账户"
+    assert holding.trade_account == "平台A交易账户"
     assert events[0].source_type == "manual"
     assert events[0].change_type == "new"
     assert events[0].import_id is None
@@ -439,14 +440,15 @@ def test_simple_import_entry_writes_quick_new_and_update_events():
     assert update_events[0].shares_delta > 0
 
 
-# 验证普通减仓和超额减仓清仓使用实际最终差值及最终市值。
+# 验证平台确认的全部份额可以精确清仓。
 def test_record_change_entry_uses_actual_clear_delta_and_mv():
     holding = _holding_for_entry()
     fund = Fund(fund_code="000101", fund_name="虚构基金", latest_nav=Decimal("2"))
     session = _EntrySession([holding, fund, fund])
     HoldingService(session).record_change(
         holding.id, HoldingChangeRequest(
-            change_type="decrease", amount=Decimal("20"),
+            change_type="decrease", amount=Decimal("10"),
+            confirmed_shares=Decimal("5"),
             business_date=date(2026, 9, 4),
         )
     )
@@ -455,6 +457,28 @@ def test_record_change_entry_uses_actual_clear_delta_and_mv():
     assert holding.market_value == Decimal("0.0000")
     assert events[0].shares_delta == Decimal("-5")
     assert events[0].mv_after == Decimal("0.0000")
+
+
+# 验证卖出份额超过所选平台持仓时拒绝，不能静默清仓。
+def test_record_change_rejects_oversell_without_mutation():
+    holding = _holding_for_entry()
+    session = _EntrySession([holding])
+
+    import pytest
+
+    with pytest.raises(ValueError, match="超过当前平台持仓"):
+        HoldingService(session).record_change(
+            holding.id,
+            HoldingChangeRequest(
+                change_type="decrease",
+                amount=Decimal("20"),
+                confirmed_shares=Decimal("6"),
+            ),
+        )
+
+    assert holding.shares == Decimal("5")
+    assert session.added == []
+    assert session.commits == 0
 
 
 # 验证普通减仓仍保留活动状态并写负 delta。
@@ -472,6 +496,44 @@ def test_record_change_entry_normal_decrease_writes_negative_delta():
     assert holding.status == 1
     assert event.change_type == "decrease"
     assert event.shares_delta == Decimal("-2.0000")
+
+
+# 验证平台确认份额优先于金额/净值估算，避免四舍五入后串账。
+def test_record_change_prefers_confirmed_shares():
+    holding = _holding_for_entry()
+    fund = Fund(fund_code="000101", fund_name="虚构基金", latest_nav=Decimal("2"))
+    session = _EntrySession([holding, fund])
+
+    result = HoldingService(session).record_change(
+        holding.id,
+        HoldingChangeRequest(
+            change_type="increase",
+            amount=Decimal("10"),
+            confirmed_shares=Decimal("3.3333"),
+            cost_nav_input=Decimal("3"),
+        ),
+    )
+
+    assert holding.shares == Decimal("8.3333")
+    assert result.change["confirmed_shares"] == "3.3333"
+
+
+# 验证旧成本未知时加仓后仍保持未知，不能把旧份额当成零成本。
+def test_record_change_keeps_unknown_cost_unknown():
+    holding = _holding_for_entry(cost_nav=None)
+    fund = Fund(fund_code="000101", fund_name="虚构基金", latest_nav=Decimal("2"))
+    session = _EntrySession([holding, fund])
+
+    HoldingService(session).record_change(
+        holding.id,
+        HoldingChangeRequest(
+            change_type="increase",
+            amount=Decimal("2"),
+            confirmed_shares=Decimal("1"),
+        ),
+    )
+
+    assert holding.cost_nav is None
 
 
 # 验证手工变动接管文件持仓，并阻止后续文件快照误清仓。

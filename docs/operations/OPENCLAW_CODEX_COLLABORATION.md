@@ -2,7 +2,7 @@
 
 > 生效日期：2026-09-02
 > 适用范围：`my-funds` 本地开发、GitHub 协同、服务器紧急热修、staging 和生产发布
-> 当前状态：协同规则已固化；backend unit 的失败自动重试已经按授权停止，未修改 OpenClaw、cron、unit 文件或生产工作区
+> 当前状态：协同规则已固化；生产应用由固定 SHA 派生的 Compose 镜像承载，OpenClaw 只负责受控的交易日调度和邮件流程
 
 ## 1. 目的
 
@@ -22,12 +22,13 @@
 
 ## 3. 当前协同基线
 
-- 本地与 GitHub 发布候选：`codex/p0-server-readiness` 的 `5f8bc18683c807dd0ef18b3b35735a7b4cffd016`。
-- 服务器生产工作区：`main` 的 `afc19e9b203141e8e604fc3f1b9f5dd438637a81` 加 3 个未提交热修文件。
-- 本地另有 5 个第四组既有改动，不属于当前 staging 或生产发布范围。
-- OpenClaw 相关进程仍存在；当前未观察到持续写入，但没有证据表明其已退出生产控制。
-- backend unit 配置仍为 `Restart=always`，但已停止失败自动重试；旧健康 uvicorn 仍属于 `tat_agent.service`。前端继续由 systemd 管理。
-- 生产数据库备份与恢复证据尚未满足，生产发布保持阻塞。
+- 本地与 GitHub 当前发布提交：`425faf2d65d7a0cb6fe8e61ab14b3761da72c420`。
+- 生产 Compose project：`my-funds-production-direct1`。
+- 生产 backend/frontend 镜像：`my-funds-production-backend:425faf2-decision`、`my-funds-production-frontend:425faf2-decision`。
+- 2026-09-22 只读复核时两个服务各一个运行实例，backend `/health` 与前端 GET 均通过。
+- OpenClaw 固定任务 ID 保持不变，当前调度为工作日 14:00、`Asia/Shanghai`；它负责交易日判断和邮件，不修改持仓或自动交易。
+- 服务器保留权限 `0600` 的发布前快照和离线归档。2026-09-19 DBSAFE2 已形成备份与隔离恢复记录；未来数据库变更必须重新取证。
+- 本地仍保留受保护差异 `fund-analyzer/tests/test_position.py`，其内容不属于本次生产发布，后续任务不得覆盖、暂存或提交。
 
 每次开工都必须重新核对该基线。发现漂移时，以实时只读结果为准并停止写操作。
 
@@ -103,7 +104,7 @@
 
 暂停 OpenClaw 自动任务或修改 systemd、cron 前，必须列出目标、当前值、拟修改值、恢复方式和维护窗口，并单独获得确认。不能仅凭进程名直接终止任务，也不能把停止 OpenClaw 等同于停止应用服务。
 
-发布后先验证 Git SHA、服务健康、关键 API 和日志，再按记录恢复自动化。恢复后再次确认没有回写旧版本。
+发布后先验证 Git SHA、实际镜像、实例数量、服务健康、关键 API 和任务状态，再按记录恢复自动化。恢复后再次确认没有回写旧版本。当前 14:00 任务只能在应用切换和只读验收完成后保持启用。
 
 ## 9. staging 隔离规则
 

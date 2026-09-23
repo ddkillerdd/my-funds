@@ -110,27 +110,36 @@ class HoldingService:
 
     def create_holding(self, data: HoldingCreate) -> HoldingResponse:
         """Create a new manual holding entry."""
+        fund_code = data.fund_code.strip()
+        platform = data.platform.strip()
+        if not fund_code:
+            raise ValueError("fund_code 不能为空")
+        if not platform:
+            raise ValueError("platform 不能为空")
+
         # Ensure fund exists in funds table
         fund = self.db.execute(
-            select(Fund).where(Fund.fund_code == data.fund_code)
+            select(Fund).where(Fund.fund_code == fund_code)
         ).scalar_one_or_none()
 
         try:
             if not fund:
                 fund = Fund(
-                    fund_code=data.fund_code,
+                    fund_code=fund_code,
                     fund_name=data.fund_name,
                     management_company=data.management_company,
                 )
                 self.db.add(fund)
                 self.db.flush()
 
-            fund_account = data.fund_account or f"MANUAL_{data.fund_code}"
-            trade_account = data.trade_account or fund_account
+            fund_account = (data.fund_account or f"{platform}_{fund_code}").strip()
+            trade_account = (data.trade_account or fund_account).strip()
+            if not fund_account or not trade_account:
+                raise ValueError("账户别名不能为空")
             holding = FundHolding(
-                fund_code=data.fund_code, fund_name=data.fund_name,
+                fund_code=fund_code, fund_name=data.fund_name,
                 share_type=data.share_type or "前收费",
-                management_company=data.management_company, platform=data.platform,
+                management_company=data.management_company, platform=platform,
                 fund_account=fund_account, trade_account=trade_account,
                 shares=data.shares, share_date=data.share_date,
                 nav_on_import=data.nav_on_import, cost_nav=data.cost_nav,
@@ -289,24 +298,34 @@ class HoldingService:
     # ---------- RFC-011: Holding Change (add/reduce by RMB amount) ----------
 
     def record_change(self, holding_id: int, body: HoldingChangeRequest) -> HoldingChangeResponse:
-        """Record an add (increase) or reduce (decrease) operation by RMB amount.
+        """按平台确认金额/份额记录加减仓，并严格保护现有持仓。
 
         Add:
-            shares_delta = amount / nav
+            shares_delta = confirmed_shares or amount / nav
             new_shares = old + delta
-            new cost_nav = (old_total_cost + amount) / new_shares   # recompute avg cost
+            已知旧成本时才重算平均成本；旧成本未知时继续保持未知
         Reduce:
-            shares_delta = amount / nav
+            shares_delta = confirmed_shares or amount / nav
             new_shares = old - delta
-            cost_nav unchanged; if new_shares <= 0 -> clear (status=0)
+            cost_nav unchanged；禁止卖出份额超过当前平台持仓
 
         Always writes a holding_changes record.
         """
         change_type = (body.change_type or "").strip().lower()
         if change_type not in ("increase", "decrease"):
             raise ValueError(f"Invalid change_type '{body.change_type}', must be increase|decrease")
-        if not body.amount or body.amount <= 0:
+        amount = Decimal(body.amount) if body.amount is not None else None
+        confirmed_shares = (
+            Decimal(body.confirmed_shares)
+            if body.confirmed_shares is not None
+            else None
+        )
+        if amount is not None and amount <= 0:
             raise ValueError("amount must be > 0")
+        if confirmed_shares is not None and confirmed_shares <= 0:
+            raise ValueError("confirmed_shares must be > 0")
+        if amount is None and confirmed_shares is None:
+            raise ValueError("amount or confirmed_shares is required")
 
         holding = self.db.execute(
             select(FundHolding).where(FundHolding.id == holding_id)
@@ -316,8 +335,10 @@ class HoldingService:
         if holding.status != 1:
             raise ValueError(f"Holding {holding_id} is not active (status={holding.status})")
 
-        # Resolve operation nav: cost_nav_input > latest net asset value > fund.latest_nav
+        # 净值优先级：用户确认净值 > 实际金额/确认份额 > 基金最新净值 > 历史最新净值。
         nav = body.cost_nav_input
+        if (not nav or nav <= 0) and amount is not None and confirmed_shares is not None:
+            nav = amount / confirmed_shares
         if not nav or nav <= 0:
             fund = self.db.execute(
                 select(Fund).where(Fund.fund_code == holding.fund_code)
@@ -336,26 +357,37 @@ class HoldingService:
             raise ValueError(f"No NAV available to convert amount for {holding.fund_code}")
 
         nav = Decimal(nav)
-        amount = Decimal(body.amount)
-        shares_delta = (amount / nav).quantize(Decimal("0.0001"))
+        shares_delta = (
+            confirmed_shares.quantize(Decimal("0.0001"))
+            if confirmed_shares is not None
+            else (amount / nav).quantize(Decimal("0.0001"))
+        )
+        operation_amount = amount if amount is not None else shares_delta * nav
 
         old_shares = Decimal(holding.shares or 0)
-        old_cost_nav = Decimal(holding.cost_nav or 0)
+        old_cost_nav = Decimal(holding.cost_nav) if holding.cost_nav is not None else None
         old_market_value = Decimal(holding.market_value or 0)
 
         if change_type == "increase":
             new_shares = old_shares + shares_delta
-            # Recompute average cost: (old_total_cost + amount) / new_shares
-            old_total_cost = old_shares * old_cost_nav
-            new_cost_nav = (old_total_cost + amount) / new_shares
-            new_cost_nav = new_cost_nav.quantize(Decimal("0.0001"))
+            if old_shares > 0 and old_cost_nav is None:
+                # 旧持仓成本未知时不能把它当成零成本，否则会虚假降低平均成本。
+                new_cost_nav = None
+            else:
+                old_total_cost = old_shares * (old_cost_nav or ZERO)
+                new_cost_nav = (old_total_cost + operation_amount) / new_shares
+                new_cost_nav = new_cost_nav.quantize(Decimal("0.0001"))
             new_market_value = (new_shares * nav).quantize(Decimal("0.0001"))
             record_type = "increase"
             final_status = 1
         else:  # decrease
+            if shares_delta > old_shares:
+                raise ValueError(
+                    f"卖出份额 {shares_delta} 超过当前平台持仓 {old_shares}，请填写平台确认份额"
+                )
             new_shares = old_shares - shares_delta
             record_type = "decrease"
-            if new_shares <= 0:
+            if new_shares == 0:
                 new_shares = Decimal("0")
                 record_type = "clear"
                 final_status = 0  # clear / soft-delete
@@ -408,8 +440,9 @@ class HoldingService:
                 "shares_before": str(old_shares),
                 "shares_after": str(new_shares),
                 "nav_at_change": str(nav),
-                "amount": str(amount),
-                "cost_nav_after": str(holding.cost_nav or 0),
+                "amount": str(operation_amount),
+                "confirmed_shares": str(shares_delta),
+                "cost_nav_after": None if holding.cost_nav is None else str(holding.cost_nav),
             },
             message=("清仓" if record_type == "clear" else ("加仓" if record_type == "increase" else "减仓"))
             + "成功，下次分析将基于最新持仓",

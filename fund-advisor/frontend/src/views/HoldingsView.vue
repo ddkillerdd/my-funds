@@ -19,7 +19,7 @@
             v-model="selectedPlatform"
             placeholder="筛选平台"
             clearable
-            @change="loadHoldings"
+            @change="handlePlatformChange"
           >
             <el-option
               v-for="p in platformOptions"
@@ -52,8 +52,48 @@
       </el-row>
     </el-card>
 
+    <el-card v-if="groupedHoldings.length" shadow="never" class="summary-card">
+      <template #header>
+        <div class="card-header">
+          <span>按基金汇总</span>
+          <span class="summary-hint">同一基金可在多个平台分别持有，分析时按基金合并</span>
+        </div>
+      </template>
+      <el-table :data="groupedHoldings" stripe style="width: 100%" @row-click="handleSummaryRowClick">
+        <el-table-column prop="fund_code" label="基金代码" width="110" />
+        <el-table-column prop="fund_name" label="基金名称" min-width="190" show-overflow-tooltip />
+        <el-table-column label="平台" min-width="180">
+          <template #default="{ row }">
+            <el-tag v-for="platform in row.platforms" :key="platform" size="small" class="platform-tag">
+              {{ platform }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="holding_count" label="持仓笔数" width="90" align="right" />
+        <el-table-column label="总份额" width="130" align="right">
+          <template #default="{ row }">{{ formatShares(row.total_shares) }}</template>
+        </el-table-column>
+        <el-table-column label="总市值" width="130" align="right">
+          <template #default="{ row }">￥{{ formatNumber(row.total_market_value) }}</template>
+        </el-table-column>
+        <el-table-column label="总盈亏" width="120" align="right">
+          <template #default="{ row }">
+            <span :class="pnlClass(row.total_pnl)">
+              {{ row.total_pnl != null ? formatNumber(row.total_pnl) : '--' }}
+            </span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <!-- Holdings Table -->
     <el-card shadow="hover" class="table-card">
+      <template #header>
+        <div class="card-header">
+          <span>各平台持仓明细</span>
+          <span class="summary-hint">加减仓只会修改选中的平台账户</span>
+        </div>
+      </template>
       <el-table
         v-loading="loading"
         :data="pagedHoldings"
@@ -65,9 +105,10 @@
         <el-table-column prop="fund_code" label="基金代码" width="110" />
         <el-table-column prop="fund_name" label="基金名称" min-width="180" show-overflow-tooltip />
         <el-table-column prop="platform" label="平台" width="120" show-overflow-tooltip />
+        <el-table-column prop="fund_account" label="账户别名" width="150" show-overflow-tooltip />
         <el-table-column label="持有份额" width="120" align="right" sortable sort-by="shares">
           <template #default="{ row }">
-            {{ formatNumber(row.shares) }}
+            {{ formatShares(row.shares) }}
           </template>
         </el-table-column>
         <el-table-column label="最新净值" width="100" align="right">
@@ -167,7 +208,9 @@
     >
       <div v-if="editingHolding" style="margin-bottom: 16px">
         <p style="margin: 0 0 8px">{{ editingHolding.fund_code }} - {{ editingHolding.fund_name }}</p>
-        <p style="margin: 0; color: #909399; font-size: 13px">平台: {{ editingHolding.platform }}</p>
+        <p style="margin: 0; color: #909399; font-size: 13px">
+          平台：{{ editingHolding.platform }}｜账户：{{ editingHolding.fund_account }}
+        </p>
       </div>
       <el-form @submit.prevent="saveCost">
         <el-form-item label="成本净值">
@@ -265,6 +308,18 @@
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12">
+            <el-form-item label="账户别名" prop="fund_account">
+              <el-input v-model="createForm.fund_account" placeholder="如 支付宝主账户" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="交易账户别名" prop="trade_account">
+              <el-input v-model="createForm.trade_account" placeholder="可选，默认同账户别名" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
             <el-form-item label="基金公司" prop="management_company">
               <el-input v-model="createForm.management_company" placeholder="可选" />
             </el-form-item>
@@ -299,10 +354,22 @@
         <el-form-item label="基金">
           <span>{{ changeTarget?.fund_name }}</span>
         </el-form-item>
-        <el-form-item label="当前份额">
-          <span>{{ changeTarget?.shares }}</span>
+        <el-form-item label="持仓位置">
+          <span>{{ changeTarget?.platform }} / {{ changeTarget?.fund_account }}</span>
         </el-form-item>
-        <el-form-item :label="changeType === 'increase' ? '加仓金额(元)' : '卖出金额(元)'" required>
+        <el-form-item label="当前份额">
+          <span>{{ formatShares(changeTarget?.shares) }}</span>
+        </el-form-item>
+        <el-form-item label="业务日期" required>
+          <el-date-picker
+            v-model="changeBusinessDate"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+            placeholder="平台确认日期"
+          />
+        </el-form-item>
+        <el-form-item :label="changeType === 'increase' ? '实际支付(元)' : '实际到账(元)'">
           <el-input-number
             v-model="changeAmount"
             :min="0.01"
@@ -310,21 +377,29 @@
             :step="10"
             controls-position="right"
             style="width: 100%"
-            placeholder="输入人民币金额，如 10"
+            placeholder="平台确认金额"
           />
         </el-form-item>
-        <el-form-item label="买入单价" v-if="changeType === 'increase'">
+        <el-form-item :label="changeType === 'increase' ? '确认增加份额' : '确认卖出份额'">
+          <el-input-number
+            v-model="changeConfirmedShares"
+            :min="0.0001"
+            :precision="4"
+            :step="1"
+            :controls="false"
+            style="width: 100%"
+            placeholder="优先填写平台最终确认份额"
+          />
+        </el-form-item>
+        <el-form-item label="确认净值">
           <el-input-number
             v-model="changeNavInput"
             :min="0"
             :precision="4"
             :controls="false"
             style="width: 100%"
-            placeholder="留空则用最新净值"
+            placeholder="可选；留空时按金额/份额推导"
           />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="changeNote" placeholder="可选" />
         </el-form-item>
         <el-form-item v-if="changePreview">
           <el-alert :title="changePreview" type="info" :closable="false" />
@@ -378,24 +453,33 @@ const changeDialogVisible = ref(false)
 const changeTarget = ref(null)
 const changeType = ref('increase')
 const changeAmount = ref(null)
+const changeConfirmedShares = ref(null)
 const changeNavInput = ref(null)
-const changeNote = ref('')
+const changeBusinessDate = ref('')
 const changeSaving = ref(false)
 const changePreview = computed(() => {
-  if (!changeTarget.value || !changeAmount.value) return ''
-  const nav = changeNavInput.value || changeTarget.value.latest_nav
-  if (!nav || nav <= 0) return '暂无净值，将按导入时成本估算'
-  const delta = changeAmount.value / nav
+  if (!changeTarget.value || (!changeAmount.value && !changeConfirmedShares.value)) return ''
+  const inferredNav = changeAmount.value && changeConfirmedShares.value
+    ? changeAmount.value / changeConfirmedShares.value
+    : null
+  const nav = changeNavInput.value || inferredNav || changeTarget.value.latest_nav
+  const delta = changeConfirmedShares.value || (nav && changeAmount.value ? changeAmount.value / nav : 0)
+  if (!delta || delta <= 0) return '请填写实际金额或平台确认份额'
   if (changeType.value === 'increase') {
     const oldShares = Number(changeTarget.value.shares || 0)
     const newShares = oldShares + delta
-    const oldCost = Number(changeTarget.value.cost_nav || 0)
-    const newCost = (oldShares * oldCost + changeAmount.value) / newShares
-    return `预计新增约 ${delta.toFixed(4)} 份 → 新份额 ${newShares.toFixed(4)}，新平均成本价约 ${newCost.toFixed(4)}`
+    if (changeTarget.value.cost_nav == null) {
+      return `将新增 ${delta.toFixed(4)} 份 → 新份额 ${newShares.toFixed(4)}；原成本未知，更新后继续标记为未知`
+    }
+    const oldCost = Number(changeTarget.value.cost_nav)
+    const operationAmount = changeAmount.value || delta * nav
+    const newCost = (oldShares * oldCost + operationAmount) / newShares
+    return `将新增 ${delta.toFixed(4)} 份 → 新份额 ${newShares.toFixed(4)}，新平均成本价约 ${newCost.toFixed(4)}`
   } else {
     const oldShares = Number(changeTarget.value.shares || 0)
-    const newShares = Math.max(0, oldShares - delta)
-    return `预计卖出约 ${delta.toFixed(4)} 份 → 剩余 ${newShares.toFixed(4)} 份${newShares <= 0 ? '（将清仓）' : ''}`
+    if (delta > oldShares) return `卖出份额超过当前 ${oldShares.toFixed(4)} 份，系统将拒绝保存`
+    const newShares = oldShares - delta
+    return `将卖出 ${delta.toFixed(4)} 份 → 剩余 ${newShares.toFixed(4)} 份${newShares === 0 ? '（将清仓）' : ''}`
   }
 })
 
@@ -403,24 +487,30 @@ function openChangeDialog(row, type) {
   changeTarget.value = row
   changeType.value = type
   changeAmount.value = null
+  changeConfirmedShares.value = null
   changeNavInput.value = null
-  changeNote.value = ''
+  changeBusinessDate.value = localDateString()
   changeDialogVisible.value = true
 }
 
 async function submitChange() {
-  if (!changeAmount.value || changeAmount.value <= 0) {
-    ElMessage.warning('请输入大于 0 的金额')
+  if ((!changeAmount.value || changeAmount.value <= 0) && (!changeConfirmedShares.value || changeConfirmedShares.value <= 0)) {
+    ElMessage.warning('请填写实际金额或平台确认份额')
+    return
+  }
+  if (!changeBusinessDate.value) {
+    ElMessage.warning('请选择业务日期')
     return
   }
   changeSaving.value = true
   try {
     const payload = {
       change_type: changeType.value,
-      amount: changeAmount.value,
+      business_date: changeBusinessDate.value,
     }
+    if (changeAmount.value) payload.amount = changeAmount.value
+    if (changeConfirmedShares.value) payload.confirmed_shares = changeConfirmedShares.value
     if (changeNavInput.value) payload.cost_nav_input = changeNavInput.value
-    if (changeNote.value) payload.note = changeNote.value
     const res = await changeHolding(changeTarget.value.id, payload)
     ElMessage.success(res.message || '操作成功')
     changeDialogVisible.value = false
@@ -436,6 +526,8 @@ const createForm = reactive({
   fund_code: '',
   fund_name: '',
   platform: '',
+  fund_account: '',
+  trade_account: '',
   shares: 0,
   share_date: '',
   cost_nav: null,
@@ -446,6 +538,7 @@ const createRules = {
   fund_code: [{ required: true, message: '请输入基金代码', trigger: 'blur' }],
   fund_name: [{ required: true, message: '请输入基金名称', trigger: 'blur' }],
   platform: [{ required: true, message: '请选择平台', trigger: 'change' }],
+  fund_account: [{ required: true, message: '请输入账户别名', trigger: 'blur' }],
   shares: [{ required: true, message: '请输入持有份额', trigger: 'blur' }],
   share_date: [{ required: true, message: '请选择份额日期', trigger: 'change' }],
 }
@@ -454,6 +547,9 @@ const createRules = {
 
 const filteredHoldings = computed(() => {
   let list = holdings.value
+  if (selectedPlatform.value) {
+    list = list.filter((holding) => holding.platform === selectedPlatform.value)
+  }
   if (searchKeyword.value) {
     const kw = searchKeyword.value.toLowerCase()
     list = list.filter(
@@ -465,13 +561,41 @@ const filteredHoldings = computed(() => {
   return list
 })
 
+// 将不同平台的同一基金汇总展示，但保留平台级明细用于实际操作。
+const groupedHoldings = computed(() => {
+  const groups = new Map()
+  for (const holding of filteredHoldings.value) {
+    const key = holding.fund_code
+    const current = groups.get(key) || {
+      fund_code: holding.fund_code,
+      fund_name: holding.fund_name,
+      platforms: [],
+      holding_count: 0,
+      total_shares: 0,
+      total_market_value: 0,
+      total_pnl: 0,
+      pnl_complete: true,
+    }
+    if (!current.platforms.includes(holding.platform)) current.platforms.push(holding.platform)
+    current.holding_count += 1
+    current.total_shares += Number(holding.shares || 0)
+    current.total_market_value += Number(holding.current_market_value || holding.market_value || 0)
+    if (holding.total_pnl == null) current.pnl_complete = false
+    else current.total_pnl += Number(holding.total_pnl)
+    groups.set(key, current)
+  }
+  return [...groups.values()]
+    .map((item) => ({ ...item, total_pnl: item.pnl_complete ? item.total_pnl : null }))
+    .sort((left, right) => right.total_market_value - left.total_market_value)
+})
+
 const pagedHoldings = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value
   return filteredHoldings.value.slice(start, start + pageSize.value)
 })
 
 const totalMarketValue = computed(() => {
-  const total = holdings.value.reduce((sum, h) => {
+  const total = filteredHoldings.value.reduce((sum, h) => {
     return sum + Number(h.current_market_value || h.market_value || 0)
   }, 0)
   return total.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -482,6 +606,21 @@ const totalMarketValue = computed(() => {
 function formatNumber(val) {
   if (val == null) return '--'
   return Number(val).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// 份额最多保留四位小数，避免与人民币金额混用两位格式。
+function formatShares(val) {
+  if (val == null) return '--'
+  return Number(val).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 4 })
+}
+
+// 使用本地日期，避免 UTC 转换导致业务日期偏移。
+function localDateString() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function pnlClass(rate) {
@@ -495,6 +634,10 @@ function handleSearch() {
   currentPage.value = 1
 }
 
+function handlePlatformChange() {
+  currentPage.value = 1
+}
+
 function handlePageChange(page) {
   currentPage.value = page
 }
@@ -505,6 +648,10 @@ function handleSizeChange(size) {
 }
 
 function handleRowClick(row) {
+  router.push(`/funds/${row.fund_code}`)
+}
+
+function handleSummaryRowClick(row) {
   router.push(`/funds/${row.fund_code}`)
 }
 
@@ -554,6 +701,8 @@ function openCreateDialog() {
   createForm.fund_code = ''
   createForm.fund_name = ''
   createForm.platform = ''
+  createForm.fund_account = ''
+  createForm.trade_account = ''
   createForm.shares = 0
   createForm.share_date = ''
   createForm.cost_nav = null
@@ -579,6 +728,8 @@ async function submitCreate() {
       fund_code: createForm.fund_code,
       fund_name: createForm.fund_name,
       platform: createForm.platform,
+      fund_account: createForm.fund_account,
+      trade_account: createForm.trade_account || createForm.fund_account,
       shares: createForm.shares,
       share_date: createForm.share_date,
     }
@@ -604,9 +755,7 @@ async function submitCreate() {
 async function loadHoldings() {
   loading.value = true
   try {
-    const params = {}
-    if (selectedPlatform.value) params.platform = selectedPlatform.value
-    holdings.value = await getHoldings(params)
+    holdings.value = await getHoldings({})
   } catch {
     // handled by interceptor
   } finally {
@@ -655,6 +804,28 @@ onMounted(() => {
 
 .table-card {
   margin-bottom: 20px;
+}
+
+.summary-card {
+  margin-bottom: 16px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summary-hint {
+  color: #909399;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.platform-tag {
+  margin-right: 6px;
+  margin-bottom: 2px;
 }
 
 .table-pagination {
