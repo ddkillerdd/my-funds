@@ -45,10 +45,10 @@ Copy-Item -LiteralPath 'E:\myfund11111\ops\.env.example' -Destination 'E:\myfund
 
 - SSH 密钥已绑定并通过主机指纹校验。
 - 服务器为 Rocky Linux；当前 my-funds 生产应用由 Compose project `my-funds-production-direct1` 承载。
-- backend 使用 `my-funds-production-backend:425faf2-decision`，frontend 使用 `my-funds-production-frontend:425faf2-decision`；2026-09-22 只读复核确认各一个运行实例，后端健康接口与前端首页均通过。
+- backend 使用 `my-funds-production-backend:30e8838-multiplatform`，frontend 使用 `my-funds-production-frontend:30e8838-multiplatform`；2026-09-23 复核确认各一个运行实例，后端健康接口、前端首页、确认份额 API 和多平台页面标记均通过。
 - MySQL 为服务器主机进程，NewAPI 的 MySQL 容器不是 my-funds 业务数据库。
-- 当前发布源为固定 Git 提交 `425faf2d65d7a0cb6fe8e61ab14b3761da72c420`，旧生产工作区不得作为发布源或被覆盖式拉取。
-- 服务器应用 `.env` 和本次回滚快照权限均已收紧为仅属主可读写；离线发布归档保留供核验和回滚使用。
+- 当前应用发布源为固定 Git 提交 `30e88380673deec82aa5dc7debe31de5714cd339`，旧生产工作区不得作为发布源或被覆盖式拉取。
+- 服务器应用 `.env` 和 `$HOME/my-funds-production-releases/mf-multiplatform-30e8838/compose.yml.before` 权限均已收紧为仅属主可读写；离线发布归档保留供核验和回滚使用。
 - OpenClaw 固定决策任务为工作日 14:00、`Asia/Shanghai`，负责交易日判断和邮件，不负责自动交易。
 
 ## 发布门禁

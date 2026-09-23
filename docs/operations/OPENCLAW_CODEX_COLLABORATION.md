@@ -22,12 +22,12 @@
 
 ## 3. 当前协同基线
 
-- 本地与 GitHub 当前发布提交：`425faf2d65d7a0cb6fe8e61ab14b3761da72c420`。
+- 本地与 GitHub 当前应用发布提交：`30e88380673deec82aa5dc7debe31de5714cd339`。
 - 生产 Compose project：`my-funds-production-direct1`。
-- 生产 backend/frontend 镜像：`my-funds-production-backend:425faf2-decision`、`my-funds-production-frontend:425faf2-decision`。
-- 2026-09-22 只读复核时两个服务各一个运行实例，backend `/health` 与前端 GET 均通过。
+- 生产 backend/frontend 镜像：`my-funds-production-backend:30e8838-multiplatform`、`my-funds-production-frontend:30e8838-multiplatform`。
+- 2026-09-23 只读复核时两个服务各一个运行实例，backend `/health`、前端 GET、确认份额 API 和多平台页面标记均通过。
 - OpenClaw 固定任务 ID 保持不变，当前调度为工作日 14:00、`Asia/Shanghai`；它负责交易日判断和邮件，不修改持仓或自动交易。
-- 服务器保留权限 `0600` 的发布前快照和离线归档。2026-09-19 DBSAFE2 已形成备份与隔离恢复记录；未来数据库变更必须重新取证。
+- 服务器发布目录 `$HOME/my-funds-production-releases/mf-multiplatform-30e8838` 保留权限 `0600` 的发布前快照和离线归档。2026-09-19 DBSAFE2 已形成备份与隔离恢复记录；未来数据库变更必须重新取证。
 - 本地仍保留受保护差异 `fund-analyzer/tests/test_position.py`，其内容不属于本次生产发布，后续任务不得覆盖、暂存或提交。
 
 每次开工都必须重新核对该基线。发现漂移时，以实时只读结果为准并停止写操作。

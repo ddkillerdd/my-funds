@@ -76,8 +76,9 @@
 
 ## 8. 当前运行基线与下一次发布门禁
 
-- 当前生产 Compose project 为 `my-funds-production-direct1`，backend/frontend 镜像均来自固定提交 `425faf2d65d7a0cb6fe8e61ab14b3761da72c420`。
-- 2026-09-22 只读复核确认两个服务各一个运行实例，backend `/health` 与前端 GET 均通过，回滚快照权限为 `0600`，离线发布归档仍在服务器。
+- 当前生产 Compose project 为 `my-funds-production-direct1`，backend/frontend 镜像均来自固定提交 `30e88380673deec82aa5dc7debe31de5714cd339`。
+- 当前镜像分别为 `my-funds-production-backend:30e8838-multiplatform` 和 `my-funds-production-frontend:30e8838-multiplatform`；2026-09-23 复核确认两个服务各一个运行实例，backend `/health`、前端 GET、确认份额 API 和多平台页面标记均通过。
+- 发布目录 `$HOME/my-funds-production-releases/mf-multiplatform-30e8838` 中保留权限 `0600` 的 Compose 回滚快照和离线归档。
 - 前端已经使用正式构建产物和 Nginx，不再把旧 Vite 开发服务器视为生产入口。
 - OpenClaw 固定决策任务当前为工作日 14:00（`Asia/Shanghai`），发布前后都要核对任务是否正在运行，禁止在执行中切换应用。
 - 下一次代码发布仍须使用明确 Git SHA 和固定镜像；涉及数据库结构或数据变更时，必须重新备份并隔离恢复验证。

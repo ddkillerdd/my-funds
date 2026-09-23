@@ -74,18 +74,18 @@ Codex 本地开发
 
 ## 7. 当前生产基线与后续门禁
 
-截至 2026-09-22，生产应用已经切换到 Compose project `my-funds-production-direct1`，发布源为 Git 提交 `425faf2d65d7a0cb6fe8e61ab14b3761da72c420`。当前实际运行镜像为：
+截至 2026-09-23，生产应用运行在 Compose project `my-funds-production-direct1`，发布源为 Git 提交 `30e88380673deec82aa5dc7debe31de5714cd339`。当前实际运行镜像为：
 
-- backend：`my-funds-production-backend:425faf2-decision`
-- frontend：`my-funds-production-frontend:425faf2-decision`
+- backend：`my-funds-production-backend:30e8838-multiplatform`
+- frontend：`my-funds-production-frontend:30e8838-multiplatform`
 
-只读复核确认 backend/frontend 各一个实例且均为 `running`，生产回环 `/health` 和前端 GET 均通过。当前前端由正式构建产物和 Nginx 承载，应用访问不再依赖旧 Vite 开发服务器。旧生产工作区只作为受保护的历史现场，不得再作为新版本发布源。
+只读复核确认 backend/frontend 各一个实例且均为 `running`，生产回环 `/health`、前端 GET、`confirmed_shares` API 字段和多平台页面标记均通过。当前前端由正式构建产物和 Nginx 承载，应用访问不再依赖旧 Vite 开发服务器。旧生产工作区只作为受保护的历史现场，不得再作为新版本发布源。
 
 本次发布没有数据库结构迁移或生产数据写入。2026-09-19 的 DBSAFE2 记录已形成服务器内数据库备份及隔离恢复证据；后续涉及 schema、数据库版本或不可逆数据变更时，仍须在变更前重新生成与当次发布匹配的备份和恢复证据。
 
 OpenClaw 当前负责交易日判断、14:00 工作日触发和邮件投递。固定任务保持原任务 ID，2026-09-22 复核时为 `enabled=true`、`running=false`，时区为 `Asia/Shanghai`，cron 为 `0 14 * * 1-5`。OpenClaw 不负责自动交易，也不得绕过应用的资金、冷却期和数据质量门禁。
 
-服务器保留了本次发布的权限 `0600` 回滚快照和离线发布归档。继续维护时应优先复用明确 SHA、固定镜像和现有 Compose 接管链，不得覆盖旧工作区、修改真实持仓或把聊天内容当作配置备份。
+服务器发布目录 `$HOME/my-funds-production-releases/mf-multiplatform-30e8838` 保留了本次发布的权限 `0600` 回滚快照和离线发布归档。继续维护时应优先复用明确 SHA、固定镜像和现有 Compose 接管链，不得覆盖旧工作区、修改真实持仓或把聊天内容当作配置备份。
 
 当前非阻塞后续事项：
 
