@@ -239,6 +239,7 @@ async def run_screener_with_explanation(
     api_base: str,
     api_key: str,
     model: str,
+    fallback_models: Optional[List[str]] = None,
     portfolio_navs: Optional[List[List[NavPoint]]] = None,
     budget_pct: float = 10.0,
     top_n: int = 5,
@@ -255,7 +256,12 @@ async def run_screener_with_explanation(
         return result
 
     from .llm_client import LLMClient, LLMConfig
-    cfg = LLMConfig(api_base=api_base, api_key=api_key, primary_model=model)
+    cfg = LLMConfig(
+        api_base=api_base,
+        api_key=api_key,
+        primary_model=model,
+        fallback_models=fallback_models,
+    )
     llm = LLMClient(cfg)
 
     # Build a compact fact sheet for the top picks

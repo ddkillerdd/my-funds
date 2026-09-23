@@ -1,5 +1,7 @@
 """Scheduler API - manual trigger for background jobs."""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -15,7 +17,10 @@ def run_advisor_job(
         False,
         description="本地邮件已禁用，必须为 false；交易日邮件由 OpenClaw 负责",
     ),
-    model: str = Query("stepfun-ai/step-3.7-flash", description="LLM model"),
+    model: Optional[str] = Query(
+        None,
+        description="兼容参数；留空时使用服务器统一模型配置",
+    ),
     force: bool = Query(
         False,
         description="本地邮件已禁用，必须为 false；不得绕过去重边界",

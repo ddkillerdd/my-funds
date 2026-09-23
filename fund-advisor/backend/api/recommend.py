@@ -17,9 +17,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-DEFAULT_MODEL = "deepseek-ai/deepseek-v4-flash"
-
-
 @router.post("/timing", response_model=TimingResponse,
              summary="单基金入场择时")
 def recommend_timing(

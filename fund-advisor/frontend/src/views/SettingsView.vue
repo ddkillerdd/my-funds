@@ -262,7 +262,7 @@ const advisorRunning = ref(false)
 const advisorResult = ref(null)
 const smtpConfigured = ref(false)
 const smtpTo = ref('')
-const advisorDefaultModel = ref('stepfun-ai/step-3.7-flash')
+const advisorDefaultModel = ref('读取中')
 
 async function handleRefreshNav() {
   refreshing.value = true
@@ -373,6 +373,7 @@ async function loadAdvisorStatus() {
     const resp = await fetch('/api/advisor/status')
     const data = await resp.json()
     smtpConfigured.value = data.configured
+    advisorDefaultModel.value = data.default_model || '未配置'
   } catch {
     // ignore
   }

@@ -3,7 +3,7 @@
 两层推荐:
   1. 规则预筛层: 复用现有 RecommenderService.run_screen(六因子量化打分),
      硬过滤剔除用户已持有的基金(禁止重复/避免过度集中) + 候选池收敛到 Top20。
-  2. AI研判层: 把规则层 Top N 的量化特征喂给 LLM(NewAPI, step-3.7 链),
+  2. AI研判层: 把规则层 Top N 的量化特征喂给统一配置的 NewAPI 模型链,
      结合"当前市场环境"选现阶段更适合入场的 3-5 只 + 人话理由 + 风险提示。
 
 风控: AI 只准从规则层给出的候选里选, 不得臆造基金。
@@ -24,18 +24,6 @@ from backend.services.recommend_service import RecommendService
 
 logger = logging.getLogger(__name__)
 
-# 模型 failover 链(RFC-017/014 实测 + 2026-08-03 重新校准):
-#   minimax-m3 主(实测 4/5 成功, 稳定返回纯 JSON; 长候选略慢但 failover+取消已缓解)
-#   deepseek-v4-flash 次(2026-08-03 实测 1/5 成功, 80% 时返回 529 过载, 已退化)
-#   注意: minimax 对超长提示词极慢(~46-95s), 候选已精简到 Top 8
-#   step-3.7 是推理模型, response_format 时 content 常为 None(仅取到 reasoning), 兜底
-_MODEL_CHAIN = [
-    "minimaxai/minimax-m3",
-    "stepfun-ai/step-3.7-flash",
-]
-# 注: deepseek-ai/deepseek-v4-flash 已从荐基链移除(2026-08-03)。
-# 实测它对荐基长提示词+json_object 请求 0.6s 必返 529(上游限流), 只适合 advisor 的短维度请求。
-
 # 规则层收敛到的候选上限(喂给 AI)
 _RULE_TOP_N = 20
 # AI 输出推荐数
@@ -45,6 +33,20 @@ _AI_TOP_N = 5
 class PlanRecommenderService:
     def __init__(self, db: Session):
         self.db = db
+
+    @staticmethod
+    def _configured_model_chain(settings) -> List[str]:
+        """从统一配置构造去重后的荐基模型链。"""
+        primary_model = (settings.ANALYZER_PRIMARY_MODEL or "").strip()
+        if not primary_model:
+            raise ValueError("ANALYZER_PRIMARY_MODEL 不能为空")
+
+        models = [primary_model]
+        for candidate in (settings.ANALYZER_FALLBACK_MODELS or "").split(","):
+            model_name = candidate.strip()
+            if model_name and model_name not in models:
+                models.append(model_name)
+        return models
 
     # ─────────────────────────────────────────
     #  ① 规则预筛层: 候选池 + 剔已持有 + 量化打分
@@ -172,6 +174,7 @@ class PlanRecommenderService:
         )
 
         s = get_settings()
+        model_chain = self._configured_model_chain(s)
         payload = {
             "model": None,  # 每轮填
             "messages": [
@@ -198,9 +201,9 @@ class PlanRecommenderService:
             except Exception as ex:  # noqa: BLE001
                 return {"ok": False, "model": model, "err": str(ex)[:200]}
 
-        # 并行请求三个模型(failover), 第一个成功的立刻返回并取消其余;
+        # 并行请求配置模型链，第一个成功的立刻返回并取消其余；
         # 用 asyncio.wait(FIRST_COMPLETED) 避免 gather 等所有(慢模型会拖垮总时长)
-        tasks = {asyncio.create_task(_try(m), name=m): m for m in _MODEL_CHAIN}
+        tasks = {asyncio.create_task(_try(m), name=m): m for m in model_chain}
         pending = set(tasks.keys())
         fail_msgs = []
         winner = None
@@ -239,7 +242,7 @@ class PlanRecommenderService:
             }
 
         last_err = "; ".join(fail_msgs) or "所有模型均失败/超时"
-        logger.warning("plan ai_pick 三模型均失败: %s", last_err)
+        logger.warning("plan ai_pick 配置模型链均失败: %s", last_err)
         return {"picks": [], "overall_view": "", "model": None,
                 "error": f"AI 研判失败: {last_err}"}
 

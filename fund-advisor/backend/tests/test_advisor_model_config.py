@@ -188,3 +188,58 @@ def test_analyzer_has_no_retired_hardcoded_fallback_models():
         "deepseek-ai/deepseek-v4-flash",
     ):
         assert old_model not in source
+
+
+def test_configured_fallback_can_return_from_secondary_to_primary():
+    """断言备用角色失败时能够回到主模型，不会直接进入纯计算降级。"""
+    config = advisor_service.LLMConfig(
+        api_base="http://127.0.0.1:1/v1",
+        api_key="disabled-test-key",
+        primary_model="primary-model",
+        fallback_models=["secondary-model"],
+    )
+    analyzer = advisor_service.Analyzer(config)
+
+    assert analyzer._configured_fallback_model("primary-model") == "secondary-model"
+    assert analyzer._configured_fallback_model("secondary-model") == "primary-model"
+
+
+def test_recommendation_runtime_uses_configured_models_only():
+    """断言荐基运行时不再保留退役模型字面量。"""
+    backend_root = Path(advisor_service.__file__).parents[1]
+    analyzer_root = backend_root.parents[1] / "fund-analyzer" / "engine"
+    paths = (
+        backend_root / "api" / "advisor.py",
+        backend_root / "api" / "recommend.py",
+        backend_root / "api" / "scheduler.py",
+        backend_root / "scheduler" / "advisor_job.py",
+        backend_root / "services" / "plan_recommender.py",
+        backend_root / "services" / "recommend_service.py",
+        backend_root.parent / "frontend" / "src" / "views" / "SettingsView.vue",
+        analyzer_root / "screen_runner.py",
+    )
+    source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+    for old_model in (
+        "nvidia/nvidia-nemotron-nano-9b-v2",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "deepseek-ai/deepseek-v4-flash",
+        "stepfun-ai/step-3.7-flash",
+    ):
+        assert old_model not in source
+
+
+def test_plan_recommender_model_chain_uses_settings_and_deduplicates():
+    """断言计划荐基链来自统一配置，并清理主备模型重复项。"""
+    from backend.services.plan_recommender import PlanRecommenderService
+
+    settings = _fake_settings(
+        "primary-model",
+        " backup-b, primary-model, backup-a, backup-b, ",
+    )
+
+    assert PlanRecommenderService._configured_model_chain(settings) == [
+        "primary-model",
+        "backup-b",
+        "backup-a",
+    ]

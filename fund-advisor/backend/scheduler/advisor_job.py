@@ -12,6 +12,7 @@
 import json
 import logging
 from datetime import datetime, date
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -27,10 +28,13 @@ OPERATION_SCOPE = "advisor_analysis_with_persistence_and_backtest_updates"
 class AdvisorJob:
     """Run AI portfolio analysis and push results."""
 
-    def __init__(self, db: Session, push_email: bool = False, model: str = "stepfun-ai/step-3.7-flash", force: bool = False, persist_report: bool = True, read_only: bool = False):
+    def __init__(self, db: Session, push_email: bool = False, model: Optional[str] = None, force: bool = False, persist_report: bool = True, read_only: bool = False):
+        """初始化顾问任务；未指定模型时使用统一的主模型配置。"""
+        from backend.config import get_settings
+
         self.db = db
         self.push_email = push_email
-        self.model = model
+        self.model = model or get_settings().ANALYZER_PRIMARY_MODEL
         self.force = force
         self.persist_report = persist_report
         self.read_only = read_only

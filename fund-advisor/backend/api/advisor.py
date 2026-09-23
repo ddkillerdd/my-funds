@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-DEFAULT_MODEL = "stepfun-ai/step-3.7-flash"
-
 # 最大保留报告数（超过时删除最旧的）
 MAX_REPORTS = 30
 
@@ -48,7 +46,7 @@ def _to_cst(naive_utc_dt: datetime) -> str:
 
 @router.post("/analyze")
 def analyze_portfolio(
-    model: str = Query(DEFAULT_MODEL, description="LLM model for analysis (v2 only)"),
+    model: str | None = Query(None, description="兼容参数；v3 使用服务器统一模型配置"),
     engine: str = Query("v3", description="Engine: v3 (FundAnalyzer, default) or v2 (legacy)"),
     db: Session = Depends(get_db),
 ):
@@ -216,7 +214,7 @@ def advisor_status(db: Session = Depends(get_db)):
     return {
         "configured": bool(settings.NEWAPI_BASE_URL and settings.NEWAPI_API_KEY),
         "api_base": settings.NEWAPI_BASE_URL or "",
-        "default_model": DEFAULT_MODEL,
+        "default_model": settings.ANALYZER_PRIMARY_MODEL,
         "has_report": last_report is not None,
         "last_report_at": _to_cst(last_report.created_at) if last_report else None,
         "last_report_id": last_report.id if last_report else None,

@@ -101,8 +101,12 @@ class Analyzer:
         self.config = llm_config
 
     def _configured_fallback_model(self, current_model: str) -> str:
-        """返回服务器配置的首个不同备用模型，避免回退到代码内旧模型。"""
-        for candidate in self.llm.config.fallback_models:
+        """在配置模型链中返回首个不同模型，支持主备双向回退。"""
+        candidates = [
+            *self.llm.config.fallback_models,
+            self.llm.config.primary_model,
+        ]
+        for candidate in candidates:
             if candidate and candidate != current_model:
                 return candidate
         return current_model
@@ -428,13 +432,8 @@ class Analyzer:
     def _analyze_4_views(self, qi: QuantIndicators) -> Dict[str, Any]:
         """Run 4 independent viewpoint analyses — each possibly with a different model.
 
-        Model assignment (RFC-005):
-          trend  → omni-30b (2.5x depth, covers short+long)
-          risk   → omni-30b (specific numerical risk data)
-          value  → ds-flash (strongest reasoning for Sharpe/Sortino/Calmar)
-          tech   → nano-9b  (MACD/RSI/BB pattern recognition, 9B enough)
-
-        Fallback per viewpoint: primary fail → secondary model → pure calc
+        每个视角均读取统一模型配置中的角色分配。
+        单视角失败时按配置模型链回退，全部失败才进入纯计算降级。
         """
         results = {}
         # Track which model was actually used for each view
@@ -443,7 +442,7 @@ class Analyzer:
         # RFC-013: 四视角分数改确定性量化（LLM 不再打分，只提供解读叙事）
         _vs = score_views_quant(qi)
 
-        # --- Trend View: omni-30b → nano-9b → calc ---
+        # --- 趋势视角：配置角色模型 → 配置备用模型 → 纯计算 ---
         trend_model = self.llm.config.model_assignments.get("trend", self.llm.config.primary_model)
         trend_fallback = self._configured_fallback_model(trend_model)
         try:
@@ -488,8 +487,9 @@ class Analyzer:
                 uncertainties=data.get("uncertainties", []),
             )
 
-        # --- Risk View: omni-30b → nano-9b → calc ---
+        # --- 风险视角：配置角色模型 → 配置备用模型 → 纯计算 ---
         risk_model = self.llm.config.model_assignments.get("risk", self.llm.config.primary_model)
+        risk_fallback = self._configured_fallback_model(risk_model)
         try:
             prompt = build_risk_prompt(qi)
             try:
@@ -497,11 +497,11 @@ class Analyzer:
                                      step_label=f"risk_{qi.fund_code}", model=risk_model)
                 model_sources["risk"] = risk_model
             except Exception:
-                if trend_fallback == risk_model:
+                if risk_fallback == risk_model:
                     raise
                 raw = self.llm.call(prompt, temperature=0.3, max_tokens=3072, json_mode=True,
-                                     step_label=f"risk_{qi.fund_code}_fb", model=trend_fallback)
-                model_sources["risk"] = trend_fallback
+                                     step_label=f"risk_{qi.fund_code}_fb", model=risk_fallback)
+                model_sources["risk"] = risk_fallback
             data = parse_json_response(raw)
             if data:
                 results["risk"] = RiskViewDiagnosis(
@@ -529,7 +529,7 @@ class Analyzer:
                 uncertainties=data.get("uncertainties", []),
             )
 
-        # --- Value View: ds-flash → omni-30b → calc ---
+        # --- 价值视角：配置角色模型 → 配置备用模型 → 纯计算 ---
         value_model = self.llm.config.model_assignments.get("value", self.llm.config.primary_model)
         value_fallback = self._configured_fallback_model(value_model)
         try:
@@ -570,7 +570,7 @@ class Analyzer:
                 uncertainties=data.get("uncertainties", []),
             )
 
-        # --- Technical View: nano-9b → omni-30b → calc ---
+        # --- 技术视角：配置角色模型 → 配置备用模型 → 纯计算 ---
         tech_model = self.llm.config.model_assignments.get("tech", self.llm.config.primary_model)
         tech_fallback = self._configured_fallback_model(tech_model)
         try:
@@ -664,7 +664,7 @@ class Analyzer:
     ) -> DebateSummary:
         """Run debate synthesis with model-source-aware prompt.
 
-        RFC-005: debates use ds-flash (strongest reasoning), with omni-30b fallback.
+        RFC-005：辩论视角使用配置的角色模型，并按统一模型链回退。
         Two-layer check: signal-level contradictions + model-level reliability.
         """
         debate_model = self.llm.config.model_assignments.get("debate", self.llm.config.primary_model)

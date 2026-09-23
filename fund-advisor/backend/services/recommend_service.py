@@ -214,11 +214,24 @@ class RecommendService:
             if with_ai:
                 from backend.config import get_settings
                 s = get_settings()
+                primary_model = (s.ANALYZER_PRIMARY_MODEL or "").strip()
+                if not primary_model:
+                    raise ValueError("ANALYZER_PRIMARY_MODEL 不能为空")
+                fallback_models = []
+                for candidate in (s.ANALYZER_FALLBACK_MODELS or "").split(","):
+                    model_name = candidate.strip()
+                    if (
+                        model_name
+                        and model_name != primary_model
+                        and model_name not in fallback_models
+                    ):
+                        fallback_models.append(model_name)
                 res = asyncio.run(run_screener_with_explanation(
                     cands,
                     api_base=s.NEWAPI_BASE_URL,
                     api_key=s.NEWAPI_API_KEY,
-                    model="deepseek-ai/deepseek-v4-flash",
+                    model=primary_model,
+                    fallback_models=fallback_models or [primary_model],
                     portfolio_navs=pf_navs,
                     budget_pct=budget_pct,
                     top_n=top_n,
