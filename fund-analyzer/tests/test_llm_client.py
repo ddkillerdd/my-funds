@@ -4,6 +4,7 @@ import pytest
 import json
 from engine.llm_client import (
     LLMConfig,
+    LLMClient,
     parse_json_response,
     validate_diagnosis_json,
     fallback_trend_diagnosis,
@@ -232,7 +233,7 @@ class TestFallbacks:
 class TestLLMConfig:
     def test_default_config(self):
         config = LLMConfig(api_base="http://localhost:8443/v1", api_key="test-key")
-        assert config.primary_model == "nvidia/nvidia-nemotron-nano-9b-v2"
+        assert config.primary_model == "mimo-v2.5-pro"
         assert len(config.fallback_models) >= 1
         assert config.default_timeout == 60.0
 
@@ -247,3 +248,38 @@ class TestLLMConfig:
         assert config.primary_model == "custom-model"
         assert config.fallback_models == ["fallback-1", "fallback-2"]
         assert config.default_timeout == 30.0
+
+    def test_opencode_session_id_is_generated_and_stable(self):
+        """断言每个客户端自动生成非空会话标识，且同一客户端保持稳定。"""
+        config = LLMConfig(api_base="http://127.0.0.1:1/v1", api_key="test-key")
+        client = LLMClient(config)
+
+        assert config.opencode_session_id.startswith("fund-advisor-")
+        assert config.opencode_session_id == client.config.opencode_session_id
+
+    def test_call_once_sends_opencode_session_header(self):
+        """断言模型请求携带网关要求的会话头，不进行真实网络访问。"""
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        class FakeHttpClient:
+            @staticmethod
+            def post(url, json, headers, timeout):
+                captured["headers"] = headers
+                return FakeResponse()
+
+        config = LLMConfig(
+            api_base="http://127.0.0.1:1/v1",
+            api_key="test-key",
+            opencode_session_id="synthetic-session",
+        )
+        client = LLMClient(config, http_client=FakeHttpClient())
+
+        assert client._call_once("synthetic-model", "prompt", 0.0, 10, 1.0) == "ok"
+        assert captured["headers"]["x-opencode-session"] == "synthetic-session"

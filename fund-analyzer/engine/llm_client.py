@@ -2,7 +2,7 @@
 LLM Client for FundAnalyzer
 
 Encapsulates API calls to NewAPI gateway with:
-- Fallback chain: nemotron-nano → deepseek-v4-flash → pure-calculation
+- Fallback chain supplied by the application configuration
 - Rate-limit-safe serial calls
 - JSON parsing with validation
 - Timeout/retry logic
@@ -13,6 +13,7 @@ import json
 import re
 import time
 import logging
+import uuid
 from typing import Optional, Dict, Any, List
 
 import httpx
@@ -29,25 +30,29 @@ class LLMConfig:
         self,
         api_base: str,
         api_key: str,
-        primary_model: str = "nvidia/nvidia-nemotron-nano-9b-v2",
+        primary_model: str = "mimo-v2.5-pro",
         fallback_models: Optional[List[str]] = None,
         default_timeout: float = 60.0,
         fallback_timeout: float = 90.0,
         max_retries_per_model: int = 1,
         # --- v5: 按角色分配模型 ---
         model_assignments: Optional[Dict[str, str]] = None,
+        opencode_session_id: Optional[str] = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.primary_model = primary_model
-        self.fallback_models = fallback_models or [
-            "deepseek-ai/deepseek-v4-flash",
-        ]
+        self.fallback_models = fallback_models or ["mimo-v2.5"]
         self.default_timeout = default_timeout
         self.fallback_timeout = fallback_timeout
         self.max_retries_per_model = max_retries_per_model
         # 按步骤/视角指定的模型（优先于 primary_model）
         self.model_assignments = model_assignments or {}
+        # NewAPI 的 opencode 路由要求同一轮分析携带稳定会话标识。
+        self.opencode_session_id = (
+            (opencode_session_id or "").strip()
+            or f"fund-advisor-{uuid.uuid4().hex}"
+        )
 
 
 class LLMClient:
@@ -178,7 +183,7 @@ class LLMClient:
             "max_tokens": max_tokens,
         }
 
-        # v7.1: 强制 JSON 对象输出。opencode/deepseek-v4-flash 默认倾吐散文
+        # v7.1: 强制 JSON 对象输出。部分中转模型默认倾吐散文
         # (把字段当讨论对象而非输出 JSON), 导致 parse_json_response 找不到 JSON
         # 而大儒 fallback。实测 response_format={"type":"json_object"} 完美返回纯 JSON。
         if json_mode:
@@ -187,6 +192,7 @@ class LLMClient:
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
+            "x-opencode-session": self.config.opencode_session_id,
         }
 
         start = time.time()

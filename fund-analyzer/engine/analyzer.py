@@ -100,6 +100,13 @@ class Analyzer:
         self.strategy_configs = strategy_configs or {}
         self.config = llm_config
 
+    def _configured_fallback_model(self, current_model: str) -> str:
+        """返回服务器配置的首个不同备用模型，避免回退到代码内旧模型。"""
+        for candidate in self.llm.config.fallback_models:
+            if candidate and candidate != current_model:
+                return candidate
+        return current_model
+
     def analyze(self, portfolio: PortfolioInput) -> AnalysisReport:
         """
         Run complete analysis pipeline.
@@ -438,7 +445,7 @@ class Analyzer:
 
         # --- Trend View: omni-30b → nano-9b → calc ---
         trend_model = self.llm.config.model_assignments.get("trend", self.llm.config.primary_model)
-        trend_fallback = "nvidia/nvidia-nemotron-nano-9b-v2"
+        trend_fallback = self._configured_fallback_model(trend_model)
         try:
             prompt = build_trend_prompt(qi)
             try:
@@ -446,6 +453,8 @@ class Analyzer:
                                      step_label=f"trend_{qi.fund_code}", model=trend_model)
                 model_sources["trend"] = trend_model
             except Exception:
+                if trend_fallback == trend_model:
+                    raise
                 logger.info(f"Trend model {trend_model} failed, falling back to {trend_fallback}")
                 raw = self.llm.call(prompt, temperature=0.3, max_tokens=3072, json_mode=True,
                                      step_label=f"trend_{qi.fund_code}_fb", model=trend_fallback)
@@ -488,6 +497,8 @@ class Analyzer:
                                      step_label=f"risk_{qi.fund_code}", model=risk_model)
                 model_sources["risk"] = risk_model
             except Exception:
+                if trend_fallback == risk_model:
+                    raise
                 raw = self.llm.call(prompt, temperature=0.3, max_tokens=3072, json_mode=True,
                                      step_label=f"risk_{qi.fund_code}_fb", model=trend_fallback)
                 model_sources["risk"] = trend_fallback
@@ -520,7 +531,7 @@ class Analyzer:
 
         # --- Value View: ds-flash → omni-30b → calc ---
         value_model = self.llm.config.model_assignments.get("value", self.llm.config.primary_model)
-        value_fallback = self.llm.config.model_assignments.get("risk", "nvidia/nvidia-nemotron-nano-9b-v2")
+        value_fallback = self._configured_fallback_model(value_model)
         try:
             prompt = build_value_prompt(qi)
             try:
@@ -528,6 +539,8 @@ class Analyzer:
                                      step_label=f"value_{qi.fund_code}", model=value_model)
                 model_sources["value"] = value_model
             except Exception:
+                if value_fallback == value_model:
+                    raise
                 logger.info(f"Value {value_model} failed, falling back to {value_fallback}")
                 raw = self.llm.call(prompt, temperature=0.2, max_tokens=3072, json_mode=True,
                                      step_label=f"value_{qi.fund_code}_fb", model=value_fallback)
@@ -558,8 +571,8 @@ class Analyzer:
             )
 
         # --- Technical View: nano-9b → omni-30b → calc ---
-        tech_model = self.llm.config.model_assignments.get("tech", "nvidia/nvidia-nemotron-nano-9b-v2")
-        tech_fallback = self.llm.config.model_assignments.get("trend", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
+        tech_model = self.llm.config.model_assignments.get("tech", self.llm.config.primary_model)
+        tech_fallback = self._configured_fallback_model(tech_model)
         try:
             prompt = build_technical_prompt(qi)
             try:
@@ -567,6 +580,8 @@ class Analyzer:
                                      step_label=f"tech_{qi.fund_code}", model=tech_model)
                 model_sources["tech"] = tech_model
             except Exception:
+                if tech_fallback == tech_model:
+                    raise
                 raw = self.llm.call(prompt, temperature=0.3, max_tokens=3072, json_mode=True,
                                      step_label=f"tech_{qi.fund_code}_fb", model=tech_fallback)
                 model_sources["tech"] = tech_fallback
@@ -652,8 +667,8 @@ class Analyzer:
         RFC-005: debates use ds-flash (strongest reasoning), with omni-30b fallback.
         Two-layer check: signal-level contradictions + model-level reliability.
         """
-        debate_model = self.llm.config.model_assignments.get("debate", "deepseek-ai/deepseek-v4-flash")
-        debate_fallback = self.llm.config.model_assignments.get("risk", "nvidia/nvidia-nemotron-nano-9b-v2")
+        debate_model = self.llm.config.model_assignments.get("debate", self.llm.config.primary_model)
+        debate_fallback = self._configured_fallback_model(debate_model)
         model_sources = model_sources or {}
 
         # RFC-013/RFC-014: 动作确定性收敛——先算量化动作（regime-aware，幂等），
@@ -687,6 +702,8 @@ class Analyzer:
                                      step_label=f"debate_{qi.fund_code}", model=debate_model)
                 debate_model_used = debate_model
             except Exception:
+                if debate_fallback == debate_model:
+                    raise
                 logger.info(f"Debate model {debate_model} failed, falling back to {debate_fallback}")
                 raw = self.llm.call(prompt, temperature=0.1, max_tokens=3072, json_mode=True,
                                      step_label=f"debate_{qi.fund_code}_fb", model=debate_fallback)
@@ -1038,12 +1055,14 @@ class Analyzer:
 
         try:
             prompt = build_cross_validation_prompt(report_text, all_facts)
-            # Cross-validation uses nano-9b (checklist-like, no deep reasoning needed)
-            # 线上中转可能丢失 response_format，优先 nano-9b，失败时再降级。
-            crossval_models = [
-                self.llm.config.model_assignments.get("cross_val", "nvidia/nvidia-nemotron-nano-9b-v2"),
-                "deepseek-v4-flash",
-            ]
+            # 交叉验证只使用统一配置中的模型，禁止回退到代码内过期模型。
+            crossval_primary = self.llm.config.model_assignments.get(
+                "cross_val", self.llm.config.primary_model
+            )
+            crossval_models = [crossval_primary]
+            crossval_fallback = self._configured_fallback_model(crossval_primary)
+            if crossval_fallback != crossval_primary:
+                crossval_models.append(crossval_fallback)
             raw = None
             data = None
             last_err: Optional[Exception] = None
@@ -1145,7 +1164,7 @@ def analyze(
     holdings: List[FundHolding],
     api_base: str,
     api_key: str,
-    primary_model: str = "nvidia/nvidia-nemotron-nano-9b-v2",
+    primary_model: str = "mimo-v2.5-pro",
     previous_report_id: Optional[int] = None,
     previous_reports_json: Optional[List[dict]] = None,
     benchmark_history: Optional[List[NavPoint]] = None,

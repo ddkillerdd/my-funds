@@ -175,3 +175,16 @@ def test_protected_old_model_literals_are_absent_from_advisor_service():
         "nvidia/nvidia-nemotron-nano-9b-v2",
     ):
         assert source.count(old_model) == 0
+
+
+def test_analyzer_has_no_retired_hardcoded_fallback_models():
+    """断言分析器回退链只使用统一配置，不再引用已退役模型。"""
+    analyzer_source = Path(advisor_service.__file__).parents[3] / "fund-analyzer" / "engine" / "analyzer.py"
+    source = analyzer_source.read_text(encoding="utf-8")
+
+    for old_model in (
+        "nvidia/nvidia-nemotron-nano-9b-v2",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "deepseek-ai/deepseek-v4-flash",
+    ):
+        assert old_model not in source
