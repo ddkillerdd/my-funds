@@ -11,6 +11,25 @@ from backend.services.execution_policy import apply_execution_policy
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+def confirmed_policy(report, executions=(), *, today):
+    """为既有资金纪律测试提供已核验的虚构零费率渠道，不绕过生产渠道门禁。"""
+    quotes = [
+        {
+            "fund_code": item["fund_code"], "platform": "合成平台", "payment_method": "合成支付",
+            "purchase_status": "open", "account_eligible": True,
+            "subscription_fee_rate_pct": "0", "min_purchase_rmb": "0.01",
+            "daily_remaining_rmb": "1000", "source": "合成夹具",
+            "evidence_scope": "account_confirmed",
+            "observed_at": f"{today.isoformat()}T13:55:00+08:00",
+        }
+        for item in report["actions"]
+    ]
+    return apply_execution_policy(
+        report, executions, today=today, channel_quotes=quotes,
+        now=datetime.combine(today, datetime.min.time().replace(hour=14), tzinfo=SHANGHAI),
+    )
+
+
 def make_report(actions=None, *, degraded=False, quality="good"):
     """构造包含完整质量字段的虚构分析报告。"""
     actions = actions or [
@@ -95,7 +114,7 @@ def test_policy_allows_only_one_fund_and_caps_daily_amount():
         {"fund_code": "022430", "action": "increase", "priority": "medium", "action_amount": 15},
         {"fund_code": "013308", "action": "increase", "priority": "high", "action_amount": 50},
     ])
-    result = apply_execution_policy(report, today=date(2026, 9, 21))
+    result = confirmed_policy(report, today=date(2026, 9, 21))
     by_code = {item["fund_code"]: item for item in result["actions"]}
     assert by_code["013308"]["action_amount"] == 20
     assert by_code["013308"]["policy_status"] == "capped"
@@ -111,7 +130,7 @@ def test_policy_counts_actual_amounts_for_daily_and_monthly_budget():
         {"report_date": "2026-09-10", "actual_amount": 182},
         {"report_date": "2026-09-09", "actual_amount": -50},
     ]
-    result = apply_execution_policy(report, history, today=date(2026, 9, 21))
+    result = confirmed_policy(report, history, today=date(2026, 9, 21))
     assert result["actions"][0]["action_amount"] == 10
     assert result["execution_policy"]["daily_buy_remaining_rmb"] == 12
     assert result["execution_policy"]["monthly_buy_remaining_rmb"] == 10
@@ -121,7 +140,7 @@ def test_policy_blocks_consecutive_weekday_unless_strict_exception():
     """断言相邻交易日默认不买，严格实时超跌条件仅放宽冷却期。"""
     history = [{"report_date": "2026-09-18", "actual_amount": 10}]
     report = make_report()
-    blocked = apply_execution_policy(report, history, today=date(2026, 9, 21))
+    blocked = confirmed_policy(report, history, today=date(2026, 9, 21))
     assert blocked["actions"][0]["action_amount"] == 0
     assert "consecutive_trading_day_cooldown" in blocked["actions"][0]["policy_reasons"]
 
@@ -132,7 +151,7 @@ def test_policy_blocks_consecutive_weekday_unless_strict_exception():
             "signal": "oversold",
         }
     }
-    allowed = apply_execution_policy(report, history, today=date(2026, 9, 21))
+    allowed = confirmed_policy(report, history, today=date(2026, 9, 21))
     assert allowed["actions"][0]["action_amount"] == 18
     assert allowed["actions"][0]["cooldown_exception"] is True
 
@@ -145,7 +164,7 @@ def test_policy_fails_closed_when_report_data_is_not_ready(degraded, quality):
         degraded=degraded,
         quality=quality,
     )
-    result = apply_execution_policy(report, today=date(2026, 9, 21))
+    result = confirmed_policy(report, today=date(2026, 9, 21))
     assert result["actions"][0]["raw_action_amount"] == -20
     assert result["actions"][0]["action_amount"] == 0
     assert result["actions"][0]["policy_status"] == "blocked"

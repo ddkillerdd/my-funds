@@ -35,6 +35,8 @@
       </el-row>
     </el-card>
 
+    <PublicPurchaseOptions :items="publicOptions" :loading="publicOptionsLoading" :error="publicOptionsError" @query="loadPublicOptions" />
+
     <!-- Report History Drawer / Sidebar -->
     <el-row :gutter="16">
       <el-col :span="6">
@@ -87,6 +89,8 @@
 
         <!-- Report Content -->
         <template v-if="report">
+          <el-alert type="warning" :closable="false" title="分析方向、目标仓位和候选资金分配不等于下单指令。买入须核验当天渠道、费用及剩余预算；旧报告不可直接执行。" />
+          <PurchaseConfirmation v-if="activeReportId" :key="activeReportId" :report-id="activeReportId" :actions="report.actions || []" />
           <!-- Market Analysis -->
           <el-card shadow="hover" class="section-card">
             <template #header>
@@ -129,7 +133,7 @@
             <template #header>
               <div class="section-header">
                 <el-icon :size="20"><TrendCharts /></el-icon>
-                <span>历史建议回测（在线学习）</span>
+                <span>历史方向核验（非实盘收益）</span>
               </div>
             </template>
             <div class="backtest-block">
@@ -154,6 +158,7 @@
                 命中 {{ backtestStats.hits }} / 方向建议 {{ backtestStats.directional }}；
                 中性 {{ backtestStats.neutral }}；待验证 {{ backtestStats.pending }}
               </div>
+              <el-alert type="info" :closable="false" title="方向命中率不是赚钱概率；当前统计未完整计入实际成交和交易费用，不代表已证明策略能盈利。" />
               <div v-if="Object.keys(backtestStats.by_action||{}).length" class="by-action">
                 <el-tag
                   v-for="(v, k) in backtestStats.by_action"
@@ -209,7 +214,7 @@
                   </el-col>
                   <el-col :span="6">
                     <span class="suggestion-text" v-if="h.suggestion_label || h.suggestion">
-                      {{ h.suggestion_label || actionLabel(h.suggestion) }}
+                      量化分析：{{ h.suggestion_label || actionLabel(h.suggestion) }}
                       <template v-if="h.target_weight_pct != null">
                         <span class="target-wt">目标{{ h.target_weight_pct }}%</span>
                       </template>
@@ -242,24 +247,26 @@
                   <div class="action-item">
                     <div class="action-header">
                       <strong>{{ a.fund_name }}</strong>
-                      <span class="action-badge">{{ a.action_label || actionLabel(a.action) }}</span>
+                      <span class="action-badge">{{ isBuyCandidate(a) ? '量化候选：' : '' }}{{ a.action_label || actionLabel(a.action) }}</span>
                       <el-tag v-if="a.priority === 'high'" type="danger" size="small">高优</el-tag>
                       <el-tag v-else-if="a.priority === 'medium'" type="warning" size="small">中</el-tag>
                       <el-tag v-if="a.target_weight_pct != null" type="info" size="small">目标 {{ a.target_weight_pct }}%</el-tag>
                     </div>
                     <p class="action-reason">{{ cleanEvidence(a.reason) }}</p>
                     <!-- RFC-014: 绝对操作金额 -->
-                    <p v-if="a.action_amount != null && a.action_amount !== 0" class="action-amount" :class="a.action_amount > 0 ? 'amt-in' : 'amt-out'">
-                      {{ a.action_amount > 0 ? '▶ $' : '◀ $' }} {{ fmtMoney(Math.abs(a.action_amount)) }}
+                    <p v-if="a.action_amount != null && a.action_amount !== 0 && (!isBuyCandidate(a) || isCurrentPurchaseCheck(a.purchase_check, purchaseClock))" class="action-amount" :class="a.action_amount > 0 ? 'amt-in' : 'amt-out'">
+                      {{ a.action_amount > 0 ? '含费付款预览：' : '赎回前估算金额：' }} {{ fmtMoney(Math.abs(a.action_amount)) }}
                       <template v-if="a.current_amount != null">（现持 {{ fmtMoney(a.current_amount) }} → 目标 {{ fmtMoney(a.target_amount) }}）</template>
                     </p>
                     <p v-else-if="a.action_amount === 0" class="action-amount amt-zero">无需资金变动</p>
+                    <PurchaseCheck v-if="isBuyCandidate(a)" :check="a.purchase_check" :now="purchaseClock" />
+                    <p v-if="a.action_amount < 0" class="policy-reason">赎回费尚未核验，到账金额与持有天数、确认净值有关；本页不自动卖出。</p>
                     <p v-if="a.policy_reasons?.length" class="policy-reason">
                       门禁：{{ a.policy_reasons.map(policyReasonLabel).join('；') }}
                     </p>
                     <!-- RFC-020 块C: 记录实际执行反馈和金额，不自动更新真实持仓/现金 -->
                     <div class="exec-row">
-                      <span class="exec-label">实际操作（不自动更新持仓/现金）：</span>
+                      <span class="exec-label">实际操作（不自动更新持仓/现金）：买入填含费总付款</span>
                       <el-select
                         v-model="execSelections[a.fund_code]"
                         placeholder="选择操作"
@@ -348,7 +355,7 @@
             <template #header>
               <div class="section-header">
                 <el-icon :size="20"><Money /></el-icon>
-                <span>增量资金分配</span>
+                <span>候选资金分配（非最终付款）</span>
               </div>
             </template>
             <el-descriptions :column="1" border size="small">
@@ -458,16 +465,41 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { Promotion, List, Warning, DataAnalysis, Tickets, WarnTriangleFilled, CircleCheckFilled, Histogram, TrendCharts, Money } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import PurchaseCheck from '../components/PurchaseCheck.vue'
+import PublicPurchaseOptions from '../components/PublicPurchaseOptions.vue'
+import PurchaseConfirmation from '../components/PurchaseConfirmation.vue'
+import { isBuyCandidate, isCurrentPurchaseCheck, queryPublicPurchaseOptions } from '../utils/purchaseChannel.js'
 
 const loading = ref(false)
+// 页面停留时也让渠道快照自动失效，不将历史的通过状态一直显示为当前可买。
+const purchaseClock = ref(Date.now())
+let purchaseClockTimer = null
 const report = ref(null)
 const error = ref('')
 const apiConfigured = ref(false)
 const activeReportId = ref(null)
 const activeReportTime = ref('')
+const publicOptions = ref([])
+const publicOptionsLoading = ref(false)
+const publicOptionsError = ref('')
+
+// 仅在用户点击后查询公开信息，失败清空旧结果，不触发分析或邮件。
+async function loadPublicOptions() {
+  if (publicOptionsLoading.value) return
+  publicOptionsLoading.value = true
+  publicOptions.value = []
+  publicOptionsError.value = ''
+  try {
+    publicOptions.value = await queryPublicPurchaseOptions()
+  } catch {
+    publicOptionsError.value = '公开信息查询失败，本次不展示旧费率；请稍后自行查看平台。'
+  } finally {
+    publicOptionsLoading.value = false
+  }
+}
 
 // History state
 const reportHistory = ref([])
@@ -532,13 +564,17 @@ function policyReasonLabel(reason) {
     consecutive_trading_day_cooldown: '与上一交易日连续，未满足严格例外',
     budget_cap_applied: '已按剩余额度自动缩小金额',
     policy_unavailable: '执行门禁异常，已安全归零',
+    purchase_channel_unverified: '渠道、费率或账户额度未核验，保留现金',
+    quote_date_mismatch: '渠道核验日期与建议日期不一致',
+    budget_or_channel_cap_applied: '已按跨平台剩余预算和渠道额度缩小付款',
+    buy_direction_invalid: '动作方向与正向金额不一致，已归零',
   }
   return labels[reason] || reason
 }
 
 function fmtMoney(v) {
   if (v == null || isNaN(v)) return '-'
-  return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' 元'
+  return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' 元'
 }
 
 function cleanConcerns(text) {
@@ -744,6 +780,7 @@ async function loadExecutions() {
 }
 
 onMounted(async () => {
+  purchaseClockTimer = setInterval(() => { purchaseClock.value = Date.now() }, 15000)
   // RFC-020: 加载总资金配置
   await loadTotalCapital()
 
@@ -775,6 +812,9 @@ onMounted(async () => {
     // ignored
   }
 })
+
+// 离开页面时清理本地时钟，不新增请求、报告或后台任务。
+onBeforeUnmount(() => { clearInterval(purchaseClockTimer) })
 </script>
 
 <style scoped>

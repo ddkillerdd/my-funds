@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from math import isfinite
 from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
 
 from backend.models.trade_execution import TradeExecution
+from backend.services.purchase_channel_service import SHANGHAI, floor_money, load_channel_quotes, plan_purchase
 
 
 DAILY_BUY_LIMIT_RMB = 20.0
@@ -117,9 +118,12 @@ def apply_execution_policy(
     daily_limit: float = DAILY_BUY_LIMIT_RMB,
     monthly_limit: float = MONTHLY_BUY_LIMIT_RMB,
     decision_time: str = DECISION_TIME,
+    channel_quotes=None,
+    now: Optional[datetime] = None,
 ) -> dict:
     """限制报告金额：日20、月200、单日一只及相邻交易日冷却。"""
-    target_day = today or date.today()
+    clock = now or datetime.now(SHANGHAI)
+    target_day = today or clock.astimezone(SHANGHAI).date()
     result = deepcopy(report)
     actions = result.get("actions") or []
     quality_map = _fund_quality_map(result)
@@ -134,6 +138,8 @@ def apply_execution_policy(
 
     positive_actions = []
     for action in actions:
+        # 重新计算时清除旧渠道预览，不能让旧的 checked 状态覆盖本轮拦截。
+        action.pop("purchase_check", None)
         raw_amount = _to_finite_float(action.get("action_amount"), 0.0)
         action["raw_action_amount"] = raw_amount
         action["policy_status"] = "unchanged"
@@ -145,6 +151,10 @@ def apply_execution_policy(
             continue
         if raw_amount > 0 and str(action.get("action") or "") in _BUY_ACTIONS:
             positive_actions.append(action)
+        elif raw_amount > 0:
+            action["action_amount"] = 0.0
+            action["policy_status"] = "blocked"
+            action["policy_reasons"] = ["buy_direction_invalid"]
 
     selected = None
     if data_ready and positive_actions:
@@ -178,10 +188,19 @@ def apply_execution_policy(
             action["policy_reasons"] = reasons
             continue
         raw_amount = _to_finite_float(action.get("raw_action_amount"), 0.0)
-        allowed = round(min(raw_amount, daily_remaining, monthly_remaining), 2)
-        action["action_amount"] = allowed
-        action["policy_status"] = "allowed" if allowed == raw_amount else "capped"
-        action["policy_reasons"] = [] if allowed == raw_amount else ["budget_cap_applied"]
+        allowed = float(floor_money(min(raw_amount, daily_remaining, monthly_remaining)))
+        check = plan_purchase(str(action.get("fund_code") or ""), allowed, channel_quotes, clock)
+        if clock.astimezone(SHANGHAI).date() != target_day:
+            check.update(status="blocked", gross_payment_rmb=0.0, reasons=["quote_date_mismatch"])
+        action["purchase_check"] = check
+        action["action_amount"] = check["gross_payment_rmb"]
+        if check["status"] != "checked":
+            action["policy_status"] = "blocked"
+            action["policy_reasons"] = check["reasons"]
+        else:
+            final_amount = action["action_amount"]
+            action["policy_status"] = "allowed" if final_amount == raw_amount else "capped"
+            action["policy_reasons"] = [] if final_amount == raw_amount else ["budget_or_channel_cap_applied"]
 
     result["execution_policy"] = {
         "decision_time": decision_time,
@@ -200,6 +219,10 @@ def apply_execution_policy(
         "global_gate_reasons": global_reasons,
         "actual_amount_source": "trade_execution.actual_amount",
         "holiday_guard_owner": "OpenClaw交易日门禁",
+        "budget_amount_basis": "跨所有平台合计实际支付总额，包含申购费；卖出不补回买入额度",
+        "purchase_channel_gate": True,
+        "channel_quote_max_age_minutes": 30,
+        "redemption_fee_checked": False,
     }
     return result
 
@@ -211,14 +234,18 @@ def apply_execution_policy_from_db(
     daily_limit: float = DAILY_BUY_LIMIT_RMB,
     monthly_limit: float = MONTHLY_BUY_LIMIT_RMB,
     decision_time: str = DECISION_TIME,
+    now: Optional[datetime] = None,
+    confirmed_quotes: Optional[list[dict]] = None,
 ) -> dict:
-    """读取本月实际操作记录后应用确定性执行门禁。"""
-    target_day = today or date.today()
-    month_start = target_day.replace(day=1).isoformat()
+    """读取实际操作后应用门禁；当次手动证据仅在内存覆盖渠道输入，不保存。"""
+    clock = now or datetime.now(SHANGHAI)
+    target_day = today or clock.astimezone(SHANGHAI).date()
+    # 月初也要读取上月最后一个工作日，避免连续操作冷却因换月被绕过。
+    history_start = min(target_day.replace(day=1), _previous_weekday(target_day)).isoformat()
     rows = (
         db.query(TradeExecution)
         .filter(
-            TradeExecution.report_date >= month_start,
+            TradeExecution.report_date >= history_start,
             TradeExecution.report_date <= target_day.isoformat(),
         )
         .all()
@@ -230,6 +257,8 @@ def apply_execution_policy_from_db(
         daily_limit=daily_limit,
         monthly_limit=monthly_limit,
         decision_time=decision_time,
+        channel_quotes=load_channel_quotes(db) if confirmed_quotes is None else confirmed_quotes,
+        now=clock,
     )
 
 
@@ -237,6 +266,7 @@ def fail_closed_execution_policy(report: dict, reason: str = "policy_unavailable
     """门禁计算异常时把所有非零建议金额归零，避免绕过安全规则。"""
     result = deepcopy(report)
     for action in result.get("actions") or []:
+        action.pop("purchase_check", None)
         raw_amount = _to_finite_float(action.get("action_amount"), 0.0)
         action["raw_action_amount"] = raw_amount
         if raw_amount != 0:

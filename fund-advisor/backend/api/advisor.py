@@ -4,12 +4,13 @@ import json
 import logging
 from datetime import date, datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from backend.database import get_db
 from backend.models.advisor_report import AdvisorReport
+from backend.schemas.purchase_confirmation import PurchaseConfirmation
 
 logger = logging.getLogger(__name__)
 
@@ -219,3 +220,90 @@ def advisor_status(db: Session = Depends(get_db)):
         "last_report_at": _to_cst(last_report.created_at) if last_report else None,
         "last_report_id": last_report.id if last_report else None,
     }
+
+
+@router.get("/report/{report_id}/mail-preview", summary="只读生成既有报告的安全邮件预览，不发送")
+def preview_report_mail(report_id: int, db: Session = Depends(get_db)):
+    """只读取既有报告，必要时重查预算与渠道；不调用分析、SMTP或任何写入。"""
+    from backend.services.decision_delivery_service import build_delivery_preview
+    from backend.services.execution_policy import apply_execution_policy_from_db, fail_closed_execution_policy
+
+    row = db.query(AdvisorReport).filter(AdvisorReport.id == report_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    try:
+        saved = json.loads(row.report_json)
+        if not isinstance(saved, dict):
+            raise ValueError("报告格式异常")
+        actions = saved.get("actions") or []
+        if not isinstance(actions, list) or any(not isinstance(item, dict) or isinstance(item.get("action_amount"), bool) for item in actions):
+            raise ValueError("报告动作格式异常")
+        # 预算复算只能进一步收紧；不能将原门禁已拦截的异常正数重新放行。
+        for item in actions:
+            if item.get("policy_status") == "blocked":
+                item["action_amount"] = 0.0
+        clock = datetime.now(CST)
+        original_gate = (saved.get("execution_policy") or {}).get("purchase_channel_gate") is True
+        rechecked = False
+        if original_gate:
+            try:
+                saved = apply_execution_policy_from_db(db, saved, now=clock)
+                rechecked = True
+            except Exception:
+                saved = fail_closed_execution_policy(saved, "budget_not_rechecked")
+        return build_delivery_preview(saved, row.id, row.created_at, now=clock, budget_rechecked=rechecked)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="报告格式异常，无法生成安全预览") from None
+
+
+@router.get("/purchase-options/public", summary="只读查询当前四只持仓的公开销售状态，不确认账户可买")
+def public_purchase_options(db: Session = Depends(get_db)):
+    """只读取有效持仓代码和固定公开来源，不读取账户凭据或写入渠道快照。"""
+    from backend.models.holding import FundHolding
+    from backend.services.public_purchase_source import fetch_current_public_options
+
+    rows = db.query(FundHolding.fund_code).filter(FundHolding.status == 1).distinct().all()
+    return {
+        "items": fetch_current_public_options([row[0] for row in rows]),
+        "readonly": True, "account_verified": False, "is_trade_instruction": False,
+        "message": "仅为公开渠道线索；账户资格、实际优惠和剩余额度仍需下单前确认。",
+    }
+
+
+@router.post('/report/{report_id}/purchase-preview', summary='当次确认下单页后只读试算，不保存或交易')
+def preview_confirmed_purchase(report_id: int, body: PurchaseConfirmation, db: Session = Depends(get_db)):
+    """只读当前报告、有效代码及实际预算，手动信息仅在本次请求内有效。"""
+    from backend.models.holding import FundHolding
+    from backend.services.decision_delivery_service import build_delivery_preview
+    from backend.services.execution_policy import apply_execution_policy_from_db
+    from backend.services.public_purchase_source import SUPPORTED_CODES
+    from backend.services.purchase_confirmation_service import confirmation_valid_until, prepare_confirmation_report
+
+    row = db.query(AdvisorReport).filter(AdvisorReport.id == report_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail='报告不存在')
+    rows = db.query(FundHolding.fund_code).filter(FundHolding.status == 1).distinct().all()
+    active_codes = {item[0] for item in rows} & SUPPORTED_CODES
+    if body.fund_code not in active_codes:
+        raise HTTPException(status_code=422, detail='仅支持当前四只有效持仓，不自动添加基金')
+    try:
+        saved = prepare_confirmation_report(json.loads(row.report_json), body.fund_code)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=409, detail='该报告不支持当次确认，请使用新版当天报告') from None
+    clock = datetime.now(CST)
+    try:
+        checked = apply_execution_policy_from_db(db, saved, now=clock, confirmed_quotes=[body.as_quote()])
+        for previous, action in zip(saved['actions'], checked['actions']):
+            if previous.get('policy_status') == 'blocked' and previous.get('policy_reasons') != ['purchase_channel_unverified']:
+                action.update(action_amount=0.0, policy_status='blocked', policy_reasons=previous.get('policy_reasons'))
+        result = build_delivery_preview(checked, row.id, row.created_at, now=clock, budget_rechecked=True)
+        result['valid_until'] = confirmation_valid_until(row.created_at, body.observed_at, clock).isoformat()
+    except Exception:
+        # 不输出数据库错误、用户输入全文或账户相关信息；失败时没有可执行金额。
+        raise HTTPException(status_code=503, detail='只读复核未完成，不操作；未保存或下单') from None
+    result.update(
+        confirmation_saved=False, confirmation_kind='requester_attested_only',
+        account_ownership_verified=False, source_verified_by_platform_api=False,
+        decision_scope='本次请求的手动确认预览，不更改日报、邮件或已保存报告',
+    )
+    return result
