@@ -23,6 +23,15 @@ from .action_mapping import normalize_action_name
 logger = logging.getLogger(__name__)
 
 
+class LLMAPIError(RuntimeError):
+    """保留HTTP状态供重试判断，但不携带上游响应正文。"""
+
+    # 仅保存非敏感状态码，避免异常链把模型正文写入日志。
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"LLM_HTTP_{status_code}")
+
+
 class LLMConfig:
     """LLM API configuration with multi-model support."""
 
@@ -45,6 +54,8 @@ class LLMConfig:
         self.fallback_models = fallback_models or ["mimo-v2.5"]
         self.default_timeout = default_timeout
         self.fallback_timeout = fallback_timeout
+        if isinstance(max_retries_per_model, bool) or not isinstance(max_retries_per_model, int) or max_retries_per_model < 0:
+            raise ValueError("模型重试次数必须为非负整数")
         self.max_retries_per_model = max_retries_per_model
         # 按步骤/视角指定的模型（优先于 primary_model）
         self.model_assignments = model_assignments or {}
@@ -110,11 +121,13 @@ class LLMClient:
         if model:
             models_to_try = [model]
         else:
-            models_to_try = [self.config.primary_model] + [
-                m for m in self.config.fallback_models if m != self.config.primary_model
-            ]
+            # 保留配置顺序，但同一模型不能因重复配置再尝试一轮。
+            models_to_try = list(dict.fromkeys([
+                self.config.primary_model, *self.config.fallback_models,
+            ]))
 
         last_error = None
+        authentication_failed = False
 
         for i, model in enumerate(models_to_try):
             is_fallback = i > 0
@@ -122,12 +135,8 @@ class LLMClient:
                 self.config.fallback_timeout if is_fallback else self.config.default_timeout
             )
 
-            # json_mode 更容易受中转服务影响，至少允许两次重试。
-            max_retries = (
-                max(self.config.max_retries_per_model, 2)
-                if json_mode
-                else self.config.max_retries_per_model
-            )
+            # JSON模式同样遵守显式预算，不能暗中增加请求次数。
+            max_retries = self.config.max_retries_per_model
 
             for attempt in range(max_retries + 1):
                 effective_prompt = prompt
@@ -140,27 +149,34 @@ class LLMClient:
                     if json_mode:
                         parsed = parse_json_response(result)
                         if parsed is None:
-                            raise ValueError(
-                                f"json_mode=True but response contains no JSON object "
-                                f"(first 120 chars: {result[:120]!r})"
-                            )
+                            raise ValueError("LLM_JSON_OBJECT_MISSING")
                     if is_fallback:
                         self._fallback_count += 1
                     self._models_used[step_label or f"call_{self._call_count}"] = model
                     return result
                 except Exception as e:
                     last_error = e
+                    # 只记录错误类别与状态码，不回显响应、提示词或错误正文。
+                    status_code = getattr(e, "status_code", None)
                     logger.warning(
-                        f"[{step_label}] model={model} attempt={attempt+1} failed: {e}"
+                        "[%s] model=%s attempt=%s failed: category=%s http_status=%s",
+                        step_label, model, attempt + 1, type(e).__name__, status_code,
                     )
-                    if attempt < self.config.max_retries_per_model:
+                    if status_code in (401, 403):
+                        authentication_failed = True
+                        break
+                    if isinstance(e, LLMAPIError) and 400 <= e.status_code < 500 and e.status_code not in (408, 429):
+                        break
+                    if attempt < max_retries:
                         time.sleep(2)
+            if authentication_failed:
+                break
 
         self._failure_count += 1
         raise RuntimeError(
             f"LLM call failed after trying all models ({len(models_to_try)}). "
-            f"Last error: {last_error}"
-        )
+            f"Error category: {type(last_error).__name__}"
+        ) from None
 
     def _call_once(
         self,
@@ -200,9 +216,7 @@ class LLMClient:
         elapsed = time.time() - start
 
         if response.status_code != 200:
-            raise RuntimeError(
-                f"API returned {response.status_code}: {response.text[:300]}"
-            )
+            raise LLMAPIError(response.status_code)
 
         data = response.json()
         logger.info(
@@ -213,7 +227,7 @@ class LLMClient:
         # Extract content
         choices = data.get("choices", [])
         if not choices:
-            raise RuntimeError(f"No choices in response: {json.dumps(data)[:300]}")
+            raise RuntimeError("LLM_CHOICES_MISSING")
 
         message = choices[0].get("message", {})
         content = message.get("content")
@@ -222,11 +236,14 @@ class LLMClient:
         # 当 reasoning_tokens 占满 max_tokens 时 content 为空)。
         # 兼容三套字段: content / reasoning_content(opencode·deepseek) / reasoning(NIM)
         if not content:
+            # 结构化分析只认可正式content，不能把推理草稿作为可执行结论。
+            if json_mode:
+                raise RuntimeError("LLM_FINAL_CONTENT_MISSING")
             reasoning = message.get("reasoning_content") or message.get("reasoning")
             if reasoning and isinstance(reasoning, str) and reasoning.strip():
                 content = reasoning
             else:
-                raise RuntimeError(f"No content in message (reasoning empty): {json.dumps(message)[:300]}")
+                raise RuntimeError("LLM_CONTENT_MISSING")
 
         return content.strip()
 
@@ -243,6 +260,7 @@ def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
     in that case we take the first dict element so callers can safely .get()).
     """
 
+    # 将兼容包装转换为对象；数组、双层字符串仍沿用原有兼容规则。
     def _coerce(value):
         # JSON string double-wrap
         if isinstance(value, str):
@@ -286,7 +304,9 @@ def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
         matches = re.findall(pattern, raw)
         for match in matches:
             try:
-                return _coerce(json.loads(match))
+                coerced = _coerce(json.loads(match))
+                if coerced is not None:
+                    return coerced
             except json.JSONDecodeError:
                 continue
 
@@ -294,50 +314,30 @@ def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
     best_result = None
     best_key_count = -1
     
-    for start_char, end_char in [("{", "}"), ("[", "]")]:
-        start_pos = 0
-        while True:
-            start = raw.find(start_char, start_pos)
-            if start < 0:
-                break
-            depth = 0
-            end_pos = -1
-            for i in range(start, len(raw)):
-                ch = raw[i]
-                if ch == start_char:
-                    depth += 1
-                elif ch == end_char:
-                    depth -= 1
-                    if depth == 0:
-                        end_pos = i + 1
-                        break
-            if end_pos < 0:
-                break
-            try:
-                candidate = json.loads(raw[start:end_pos])
-                # Handle double-wrapped JSON strings
-                if isinstance(candidate, str):
-                    try:
-                        candidate = json.loads(candidate)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                if isinstance(candidate, dict):
-                    key_count = len(candidate)
-                    if key_count > best_key_count:
-                        best_result = candidate
-                        best_key_count = key_count
-                elif isinstance(candidate, list) and best_key_count < 0:
-                    best_result = candidate
-                    best_key_count = 0
-            except json.JSONDecodeError:
-                pass
-            start_pos = end_pos  # move past this candidate, try next
+    # 由标准JSON解码器处理引号、转义及字符串内括号，不再直接数括号。
+    decoder = json.JSONDecoder()
+    start_pos = 0
+    while start_pos < len(raw):
+        match = re.search(r"[\{\[]", raw[start_pos:])
+        if match is None:
+            break
+        start = start_pos + match.start()
+        try:
+            candidate, end_pos = decoder.raw_decode(raw, start)
+        except json.JSONDecodeError:
+            start_pos = start + 1
+            continue
+        candidate = _coerce(candidate)
+        if candidate is not None and len(candidate) > best_key_count:
+            best_result = candidate
+            best_key_count = len(candidate)
+        start_pos = end_pos
     
     if best_result is not None:
         logger.info(f"Extracted JSON with {best_key_count} top-level keys from response (non-pure JSON)")
         return _coerce(best_result)
 
-    logger.warning(f"Failed to parse JSON from response: {raw[:200]}...")
+    logger.warning("模型响应无法解析为JSON对象；已隐藏响应正文，字符数=%s", len(raw))
     return None
 
 

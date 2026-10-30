@@ -59,6 +59,8 @@ class AdvisorJob:
             self.db.add(report)
             self.db.commit()
             self.db.refresh(report)
+            # 报告主记录已保存；后续回测或保留数量清理失败不应抹去其编号。
+            self.report_id = report.id
 
             # RFC-012: 建议回测快照（关联 report_id）
             try:
@@ -115,7 +117,33 @@ class AdvisorJob:
             self.report_id = report.id
         except Exception as e:  # noqa: BLE001
             self.db.rollback()
-            logger.warning("persist report failed in advisor job: %s", e)
+            logger.warning("persist report failed in advisor job: category=%s", type(e).__name__)
+
+    # 为分析和保存失败提供不含模型正文的统一结果。
+    def _failure_result(self, start_time: datetime, stage: str) -> dict:
+        """返回无报告的明确技术失败，不伪造分析、不继续回测或发送邮件。"""
+        contract = {
+            "operation_scope": OPERATION_SCOPE,
+            "read_only": False,
+            "report_persistence_enabled": bool(self.persist_report),
+            "backtest_updates_enabled": False,
+            "database_writes_possible": bool(self.persist_report),
+            "external_model_calls_enabled": True,
+            "local_email_disabled": True,
+            "email_owner": "OpenClaw",
+        }
+        return {
+            "success": False, "technical_failure": True, "is_fallback": True,
+            "analysis": None, "email_sent": False, "skipped": False,
+            "summary": {
+                "analysis_ok": False, "report_id": None, "failure_stage": stage,
+                "holding_count": 0, "actions_count": 0, "email_sent": False,
+                "zero_amount": True, "started_at": start_time.isoformat(),
+                "finished_at": datetime.now().isoformat(), "model": self.model,
+                **contract,
+            },
+            **contract,
+        }
 
     def run(self) -> dict:
         """
@@ -135,20 +163,31 @@ class AdvisorJob:
             )
 
         start_time = datetime.now()
+        # 同一个任务实例再次运行时也不能沿用旧报告编号。
+        self.report_id = None
         logger.info("AdvisorJob started at {time}".format(time=start_time.isoformat()))
 
         # Step 1: Run AI analysis
-        result = AdvisorService(self.db).analyze(model=self.model)
-        analysis_success = ("portfolio_diagnosis" in result
-                           and result.get("portfolio_diagnosis", {}).get("overall_assessment") != "无法分析")
+        try:
+            result = AdvisorService(self.db).analyze(model=self.model)
+        except Exception as exc:
+            logger.warning("advisor analysis failed: category=%s", type(exc).__name__)
+            return self._failure_result(start_time, "analysis")
+        if not isinstance(result, dict) or not isinstance(result.get("portfolio_diagnosis"), dict):
+            return self._failure_result(start_time, "analysis_shape")
+        assessment = result["portfolio_diagnosis"].get("overall_assessment")
+        if not isinstance(assessment, str) or not assessment.strip():
+            return self._failure_result(start_time, "analysis_shape")
+        analysis_success = assessment != "无法分析"
         # Check if fallback
-        assessment = result.get("portfolio_diagnosis", {}).get("overall_assessment", "")
         is_fallback = ("无法分析" in assessment or "暂不可用" in assessment)
 
         # Step 1.5: 持久化报告到 advisor_report（与 POST /api/advisor/analyze 行为一致，
         # 让定时任务/手动 run-advisor 的报告也能在前端回溯、计入 RFC-012 回测命中率）
         if self.persist_report:
             self._persist_report(result)
+            if self.report_id is None:
+                return self._failure_result(start_time, "report_persistence")
 
         # Step 2: RFC-012 回测验证 + 在线学习适应（每日顺带跑，10天自动收紧置信度）
         backtest = {"validated": 0, "adapted": False}
